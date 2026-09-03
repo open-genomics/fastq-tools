@@ -80,7 +80,7 @@ TEST_F(FastqWriterTest, PublishedOutputFollowsUmask) {
     }
     ::umask(originalUmask);
 
-    struct stat st {};
+    struct stat st{};
     ASSERT_EQ(::stat(tmpFile_.c_str(), &st), 0);
     EXPECT_EQ(st.st_mode & 0777, 0644) << std::oct << "mode=" << (st.st_mode & 0777);
 }

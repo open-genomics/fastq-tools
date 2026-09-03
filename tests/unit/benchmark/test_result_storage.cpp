@@ -1,16 +1,14 @@
-#include "benchmark/result_storage.h"
-
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
 
-#include <nlohmann/json.hpp>
-
-#include <gtest/gtest.h>
-
 #include "fixture_loader.h"
+
+#include "benchmark/result_storage.h"
+#include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 namespace fq::benchmark {
 namespace {

@@ -68,7 +68,7 @@ static auto endsWithGzSuffix(const std::string& path) -> bool {
 // 且对设备做 rename 覆盖也无意义。此类目标直接写入（与 stdout 语义一致）。
 // 目标不存在或 stat 失败时按普通文件处理（走原子路径，open 阶段报错）。
 auto isSpecialFileTarget(const std::string& path) -> bool {
-    struct stat st {};
+    struct stat st{};
     if (::stat(path.c_str(), &st) != 0) {
         return false;
     }

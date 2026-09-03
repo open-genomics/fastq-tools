@@ -347,8 +347,7 @@ TEST(ExecutionRuntimeTest, ExecuteBackendsHonorTheSameObservableContract) {
 // ---------------------------------------------------------------------------
 class AnyBatchSummaryOperation final : public ExecutionOperation {
 public:
-    explicit AnyBatchSummaryOperation(bool failOnProcess = false)
-        : failOnProcess_(failOnProcess) {}
+    explicit AnyBatchSummaryOperation(bool failOnProcess = false) : failOnProcess_(failOnProcess) {}
 
     auto makeResult() -> std::any override {
         return BatchSummary{};
@@ -374,8 +373,8 @@ private:
     bool failOnProcess_;
 };
 
-auto makeOneTbbContext(fq::test::TempDirectory& tempDir,
-                       std::shared_ptr<fq::io::IWriter> writer) -> ExecutionBackendContext {
+auto makeOneTbbContext(fq::test::TempDirectory& tempDir, std::shared_ptr<fq::io::IWriter> writer)
+    -> ExecutionBackendContext {
     ProcessingOptions options;
     options.batchSize = 1;
     options.threadCount = 2;

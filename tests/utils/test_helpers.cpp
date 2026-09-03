@@ -80,8 +80,7 @@ void TestDataGenerator::cleanup() {
 void FastQToolsTest::SetUp() {
     // 自当前目录向上定位 tests/data/fixtures（测试工作目录位于构建树内）
     auto dir = std::filesystem::current_path();
-    for (int depth = 0;
-         depth < 6 && !std::filesystem::exists(dir / "tests" / "data" / "fixtures");
+    for (int depth = 0; depth < 6 && !std::filesystem::exists(dir / "tests" / "data" / "fixtures");
          ++depth) {
         dir = dir / "..";
     }
