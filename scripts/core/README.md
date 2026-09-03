@@ -126,9 +126,27 @@
 **特点**:
 - 智能系统检测
 - 分层依赖管理（runtime/dev/all）
+- LLVM 工具链从 apt.llvm.org 安装固定大版本（与 CI 同源，见 `toolchain.env`），并 `update-alternatives` 钉住裸命令
 - 安装验证
 - Dry-run 模式
 - Python 工具集成
+
+### 🩺 doctor
+**本地环境体检** - 检查工具链版本是否满足要求，并给出对齐/优化建议
+
+```bash
+./scripts/core/doctor            # 体检 + 建议
+./scripts/core/doctor -v         # 附带 PATH 扫描明细（排查命令遮蔽）
+```
+
+**检查项**:
+- 版本下限（失败即退出码 1）：clang-format 必须 21.x、CMake ≥3.28、Conan 2.x、编译器支持 C++23
+- CI 对齐建议（仅提示）：cmake/conan/clang 与 ci.yml 锁定版本的差异
+- 命令遮蔽检测：PATH 中同名工具多副本、解析路径位于用户目录（uv/pip wheel）等"PATH 里恰好是谁"的风险
+- 优化建议：ccache 加速重构建、缺失的 clang-tidy/cppcheck 等
+
+预期版本集中在 [`toolchain.env`](./toolchain.env)（与 ci.yml 对齐的单一事实来源）。
+典型场景：`lint format` 产出与 CI 相反的格式意见时，先跑 doctor——多半是格式器版本被遮蔽或漂移了。
 
 ---
 

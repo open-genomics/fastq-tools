@@ -14,6 +14,12 @@ This root changelog is the maintained project history. Older granular work logs 
 ### Added
 - `Pipeline::enableReadStatistics()`：过滤写出前对保留 read 做与 `stat` 同一套 QC 汇总，无需二次扫描。
 - `filter --stat` / `--stat-json`：一趟扫描同时写出 FASTQ 与 QC 报告。
+- `scripts/core/doctor`：本地环境体检——工具链版本下限校验、与 ci.yml 锁定版本的差异提示、PATH 命令遮蔽检测（uv/pip wheel 覆盖系统 clang-format 之类的真实事故场景）与优化建议。预期版本集中在新增的 `scripts/core/toolchain.env`（与 ci.yml 对齐的单一事实来源）。
+- `scripts/core/install-deps`：LLVM 工具链（clang/clang-format/clang-tidy）改从 apt.llvm.org 安装固定大版本并 `update-alternatives` 钉住裸命令，与 CI 同源；发行版 apt 源只有旧版 LLVM，会与 CI 的 clang-format 意见相反。钉住后校验解析结果，被发行版同名包/用户目录副本遮蔽时给出告警。
+
+### Fixed
+- 修复 `.github/workflows/ci.yml` 的 job 级 `if` 非法使用 `matrix` 上下文导致的整体失效（所有 push 0 秒失败、0 个 job，包括 format gate）——改为 `resolve-matrix` job 用 Python 生成完整矩阵（含 build/test 命令等全部字段）+ `fromJSON` 注入，coverage 依赖同步调整。push/PR 仍只跑 format。
+- `scripts/core/lint` 增加 clang-format 版本守卫：解析到非预期大版本时直接报错并指向 `doctor`，不再带着错误版本产出误导性格式结论。
 
 ---
 

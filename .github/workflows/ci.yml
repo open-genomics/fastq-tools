@@ -42,7 +42,73 @@ env:
   CMAKE_VERSION: '4.3.4'
   LLVM_VERSION: '21'
 
+# 动态矩阵：job 级 if 不可用 matrix 上下文，只能用 fromJSON 的静态 matrix。
+# push/PR 输出空数组（build-and-test 自然跳过）；workflow_dispatch 按 suite 映射。
+# 注意：矩阵条目必须携带 build-and-test 引用的全部字段（compiler/cache_slug/
+# build_command/test_command），缺失会被求值为空脚本并静默报绿。
 jobs:
+  resolve-matrix:
+    name: Resolve matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        env:
+          # 显式注入，避免依赖 GitHub 是否自动导出 INPUT_* 环境变量
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_SUITE: ${{ inputs.suite || 'full' }}
+        # 矩阵由 Python 生成：一次定义全部条目、按 suite 选择，避免 shell 多行
+        # 单引号字符串（actionlint 的 shellcheck 集成会误报其内部 $()）。
+        # $(nproc) 是命令字符串里的运行时展开，由 bash 执行 test_command 时解析。
+        run: |
+          python3 - <<'PYEOF' >> "$GITHUB_OUTPUT"
+          import json, os
+
+          def entry(name, compiler, cache_slug, build_command, test_command):
+              return {"name": name, "compiler": compiler, "cache_slug": cache_slug,
+                      "build_command": build_command, "test_command": test_command}
+
+          gcc_build = "./scripts/core/build --preset gcc-release --no-lto"
+          gcc_test = "./scripts/core/test --preset gcc-release --timeout 180"
+
+          clang_tail = ("--build-dir build/ci-clang-{slug} "
+                        "--conan-profile build-config/conan/profile-clang-ci --no-lto")
+          clang_build_rel = "./scripts/core/build --compiler clang --type Release " + clang_tail
+          clang_build_san = "./scripts/core/build --compiler clang --type Debug --sanitizer {san} " + clang_tail
+          clang_test_rel = "./scripts/core/test --build-dir build/ci-clang-release --timeout 180"
+          clang_test_san = ("ctest --test-dir build/ci-clang-{slug} --output-on-failure "
+                            "--parallel $(nproc) --exclude-regex packaging_test")
+
+          all_entries = [
+              entry("GCC Release", "gcc", "gcc-release", gcc_build, gcc_test),
+              entry("Clang Release", "clang", "clang-release",
+                    clang_build_rel.format(slug="release"), clang_test_rel),
+              entry("Clang ASan", "clang", "clang-asan",
+                    clang_build_san.format(slug="asan", san="asan"),
+                    clang_test_san.format(slug="asan")),
+              entry("Clang TSan", "clang", "clang-tsan",
+                    clang_build_san.format(slug="tsan", san="tsan"),
+                    clang_test_san.format(slug="tsan")),
+              entry("Clang UBSan", "clang", "clang-ubsan",
+                    clang_build_san.format(slug="ubsan", san="ubsan"),
+                    clang_test_san.format(slug="ubsan")),
+          ]
+
+          if os.environ["EVENT_NAME"] != "workflow_dispatch":
+              matrix = []
+          elif os.environ["INPUT_SUITE"] == "quick":
+              matrix = all_entries[:2]
+          elif os.environ["INPUT_SUITE"] == "sanitizers":
+              matrix = all_entries[2:]
+          elif os.environ["INPUT_SUITE"] in ("coverage", "fuzz"):
+              # 这些 suite 只跑 coverage / fuzz-smoke 自己的 job，无构建矩阵
+              matrix = []
+          else:
+              matrix = all_entries
+
+          print("matrix=" + json.dumps(matrix))
+          PYEOF
   format:
     name: Format
     runs-on: ubuntu-latest
@@ -109,46 +175,13 @@ jobs:
   build-and-test:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
-    # 重任务：仅手动触发时运行。suite 决定运行的矩阵子集：
-    # quick → 两个 Release 构建测试；sanitizers → ASan/TSan/UBSan；full → 全部。
-    # push/PR 不运行任何构建（inputs 为空，event_name 守卫先行短路）。
-    if: |
-      github.event_name == 'workflow_dispatch' &&
-      contains(matrix.suites, inputs.suite || 'full')
+    needs: resolve-matrix
+    # 重任务：矩阵由 resolve-matrix 计算——push/PR 为空数组（本 job 跳过），
+    # workflow_dispatch 按 suite 展开。不再需要 job 级 if（matrix 上下文在此不可用）。
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: GCC Release
-            suites: quick,full
-            compiler: gcc
-            cache_slug: gcc-release
-            build_command: ./scripts/core/build --preset gcc-release --no-lto
-            test_command: ./scripts/core/test --preset gcc-release --timeout 180
-          - name: Clang Release
-            suites: quick,full
-            compiler: clang
-            cache_slug: clang-release
-            build_command: ./scripts/core/build --compiler clang --type Release --build-dir build/ci-clang-release --conan-profile build-config/conan/profile-clang-ci --no-lto
-            test_command: ./scripts/core/test --build-dir build/ci-clang-release --timeout 180
-          - name: Clang ASan
-            suites: sanitizers,full
-            compiler: clang
-            cache_slug: clang-asan
-            build_command: ./scripts/core/build --compiler clang --type Debug --sanitizer asan --build-dir build/ci-clang-asan --conan-profile build-config/conan/profile-clang-ci --no-lto
-            test_command: ctest --test-dir build/ci-clang-asan --output-on-failure --parallel $(nproc) --exclude-regex 'packaging_test'
-          - name: Clang TSan
-            suites: sanitizers,full
-            compiler: clang
-            cache_slug: clang-tsan
-            build_command: ./scripts/core/build --compiler clang --type Debug --sanitizer tsan --build-dir build/ci-clang-tsan --conan-profile build-config/conan/profile-clang-ci --no-lto
-            test_command: ctest --test-dir build/ci-clang-tsan --output-on-failure --parallel $(nproc) --exclude-regex 'packaging_test'
-          - name: Clang UBSan
-            suites: sanitizers,full
-            compiler: clang
-            cache_slug: clang-ubsan
-            build_command: ./scripts/core/build --compiler clang --type Debug --sanitizer ubsan --build-dir build/ci-clang-ubsan --conan-profile build-config/conan/profile-clang-ci --no-lto
-            test_command: ctest --test-dir build/ci-clang-ubsan --output-on-failure --parallel $(nproc) --exclude-regex 'packaging_test'
+        include: ${{ fromJSON(needs.resolve-matrix.outputs.matrix) }}
 
     env:
       # ccache 以环境变量方式注入 compiler launcher：CMake ≥ 3.17 会用同名环境变量初始化
@@ -308,15 +341,12 @@ jobs:
 
   coverage:
     name: Coverage
-    needs: build-and-test
+    needs: resolve-matrix
     runs-on: ubuntu-latest
     # 重任务：仅手动触发 full / coverage 范围时运行。coverage 范围下 build-and-test
-    # 会被跳过，故需 always() 并显式接受 skipped 依赖，否则 needs 会连带跳过本 job。
-    if: |
-      always() &&
-      github.event_name == 'workflow_dispatch' &&
-      (inputs.suite == 'full' || inputs.suite == 'coverage') &&
-      (needs.build-and-test.result == 'success' || needs.build-and-test.result == 'skipped')
+    # 矩阵为空，故依赖 resolve-matrix 而非 build-and-test；suite 为 coverage 时本 job
+    # 独立运行，其它 suite 组合经 inputs.suite 直接短路（无需接受 skipped 结果）。
+    if: github.event_name == 'workflow_dispatch' && (inputs.suite == 'full' || inputs.suite == 'coverage')
 
     steps:
       - name: Checkout

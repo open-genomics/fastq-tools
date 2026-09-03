@@ -46,6 +46,15 @@
 ./scripts/core/lint all -b build/clang-debug       # 完整检查
 ```
 
+## 环境体检
+
+```bash
+./scripts/core/doctor                      # 检查本地工具链版本/遮蔽，给出对齐建议
+```
+
+预期版本单一来源为 `scripts/core/toolchain.env`（与 ci.yml 对齐）。
+`lint format` 产出与 CI 相反的格式意见时，先跑 doctor 排查格式器版本漂移/遮蔽。
+
 ## 代码风格
 
 ### 基本规范

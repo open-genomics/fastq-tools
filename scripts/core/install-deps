@@ -13,6 +13,8 @@ set -euo pipefail
 # 加载公共函数库
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/toolchain.env"
 
 # =============================================================================
 # 默认配置
@@ -70,10 +72,7 @@ DEVELOPMENT_PACKAGES=(
     # 编译器
     gcc
     g++
-    clang
-    clang-format
-    clang-tidy
-    
+
     # 开发库
     libtbb-dev
     zlib1g-dev
@@ -166,6 +165,13 @@ install_packages() {
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "DRY RUN: 将要安装以下包:"
         printf '  - %s\n' "${packages[@]}"
+        if [[ "$INSTALL_MODE" != "runtime" ]]; then
+            log_info "DRY RUN: 还将从 apt.llvm.org 安装 LLVM ${EXPECTED_LLVM_VERSION} 工具链:"
+            printf '  - %s\n' "clang-${EXPECTED_LLVM_VERSION}" \
+                "clang-format-${EXPECTED_LLVM_VERSION}" \
+                "clang-tidy-${EXPECTED_LLVM_VERSION}" \
+                "（llvm.sh 下载 + update-alternatives 钉住裸命令）"
+        fi
         return 0
     fi
     
@@ -189,6 +195,55 @@ install_packages() {
     if ! sudo apt-get "${apt_args[@]}" "${packages[@]}"; then
         log_error "包安装失败"
         return 1
+    fi
+
+    # LLVM 工具链（clang/clang-format/clang-tidy）从 apt.llvm.org 安装固定大版本，
+    # 与 CI（.github/workflows/ci.yml env.LLVM_VERSION）同源。发行版 apt 源只有
+    # 旧版 LLVM（本机装出 18/19），会与 CI 的 clang-format 21 意见相反。
+    # runtime 模式不需要编译/格式工具，跳过。
+    if [[ "${INSTALL_MODE}" != "runtime" ]]; then
+        log_info "安装 LLVM ${EXPECTED_LLVM_VERSION} 工具链（apt.llvm.org，与 CI 同源）..."
+        local llvm_log
+        llvm_log="$(mktemp)"
+        if ! curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm-install.sh 2>/dev/null; then
+            log_error "下载 apt.llvm.org/llvm.sh 失败"
+            return 1
+        fi
+        # 输出进日志文件而非丢弃：失败时回显尾部便于定位 GPG/网络/源问题
+        if ! sudo bash /tmp/llvm-install.sh "${EXPECTED_LLVM_VERSION}" >"$llvm_log" 2>&1; then
+            log_error "LLVM ${EXPECTED_LLVM_VERSION} 安装失败（日志尾部如下）:"
+            tail -20 "$llvm_log" >&2
+            rm -f "$llvm_log" /tmp/llvm-install.sh
+            return 1
+        fi
+        rm -f "$llvm_log" /tmp/llvm-install.sh
+        # 显式安装 clang-format / clang-tidy（llvm.sh 默认只装 clang/lldb/lld/clangd），
+        # 并用 update-alternatives 钉住裸命令，避免 PATH 中被用户目录副本遮蔽
+        if ! sudo apt-get install -y --no-install-recommends \
+            "clang-${EXPECTED_LLVM_VERSION}" \
+            "clang-format-${EXPECTED_LLVM_VERSION}" \
+            "clang-tidy-${EXPECTED_LLVM_VERSION}"; then
+            log_error "LLVM ${EXPECTED_LLVM_VERSION} 额外工具安装失败"
+            return 1
+        fi
+        for tool in clang clang-format clang-tidy; do
+            if [[ -x "/usr/bin/${tool}-${EXPECTED_LLVM_VERSION}" ]]; then
+                sudo update-alternatives --install "/usr/bin/${tool}" "${tool}" \
+                    "/usr/bin/${tool}-${EXPECTED_LLVM_VERSION}" 100
+            fi
+        done
+        # update-alternatives 在目标为普通文件（发行版同名包）时静默不生效
+        # （只打 warning 不报错），钉住后必须验证解析结果
+        for tool in clang clang-format clang-tidy; do
+            if command -v "$tool" >/dev/null 2>&1; then
+                local resolved
+                resolved="$(command -v "$tool")"
+                if [[ "$resolved" != "/usr/bin/${tool}-${EXPECTED_LLVM_VERSION}" ]]; then
+                    log_warning "${tool} 未钉到 ${EXPECTED_LLVM_VERSION}（解析到 ${resolved}）。"
+                    log_warning "可能被发行版同名包或用户目录副本遮蔽，运行 ./scripts/core/doctor 查看"
+                fi
+            fi
+        done
     fi
     
     return 0
@@ -352,10 +407,10 @@ select_packages() {
                 echo cmake ninja
                 ;;
             dev)
-                echo cmake ninja llvm
+                echo cmake ninja "llvm@${EXPECTED_LLVM_VERSION}"
                 ;;
             all)
-                echo cmake ninja llvm ccache
+                echo cmake ninja "llvm@${EXPECTED_LLVM_VERSION}" ccache
                 ;;
         esac
         return

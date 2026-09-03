@@ -1,0 +1,240 @@
+#!/bin/bash
+# scripts/core/doctor
+#
+# FastQTools 本地环境体检：检查工具链版本是否满足要求，并给出对齐/优化建议。
+#
+# 设计动机：真实事故——PATH 中 ~/.local/bin 的 uv 版 clang-format 18 遮蔽了
+# 系统工具链，lint 用它格式化后与 CI（LLVM 21）意见相反，产生误导性 diff。
+# 本脚本把"PATH 里恰好是谁"显式化：版本、解析路径、遮蔽关系全部摊开。
+#
+# 使用示例:
+#   ./scripts/core/doctor                # 体检 + 建议
+#   ./scripts/core/doctor -v             # 附带 PATH 扫描明细
+#
+# 退出码: 0 = 必需项全部通过；1 = 存在失败项（警告不影响）。
+# 预期版本来自 toolchain.env（与 ci.yml 对齐的单一事实来源）。
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/../lib/common.sh"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/toolchain.env"
+
+VERBOSE=false
+for arg in "$@"; do
+    case "$arg" in
+        -v|--verbose) VERBOSE=true ;;
+        -h|--help)
+            echo "用法: ./scripts/core/doctor [-v]"
+            echo "  体检本地工具链：版本下限（必需）+ CI 对齐（建议）+ 阴影检测"
+            exit 0
+            ;;
+        *)
+            log_error "未知参数: $arg（见 --help）"
+            exit 1
+            ;;
+    esac
+done
+
+PASS_COUNT=0
+WARN_COUNT=0
+FAIL_COUNT=0
+SUGGESTIONS=()
+
+# 记一条检查结果：级别标签、工具名、详情、（可选）建议
+record() {
+    local level="$1" name="$2" detail="$3" suggestion="${4:-}"
+    case "$level" in
+        pass) log_success "  ${name}: ${detail}"; PASS_COUNT=$((PASS_COUNT + 1)) ;;
+        warn) log_warning "  ${name}: ${detail}"; WARN_COUNT=$((WARN_COUNT + 1)) ;;
+        fail) log_error   "  ${name}: ${detail}"; FAIL_COUNT=$((FAIL_COUNT + 1)) ;;
+    esac
+    if [[ -n "$suggestion" ]]; then
+        SUGGESTIONS+=("  - ${name}: ${suggestion}")
+    fi
+}
+
+# 取命令版本号的首段数字串（各工具输出格式不一，统一抓 x.y[.z]）
+get_version() {
+    local cmd="$1"
+    "$cmd" --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1 || true
+}
+
+major_of() {
+    cut -d. -f1 <<< "$1"
+}
+
+# 扫描 PATH 中某命令的所有可执行文件（检测遮蔽关系的核心）
+scan_path() {
+    local cmd="$1" dir
+    local -a found=()
+    local IFS=:
+    for dir in $PATH; do
+        [[ -z "$dir" ]] && dir="."
+        if [[ -x "${dir}/${cmd}" && ! -d "${dir}/${cmd}" ]]; then
+            found+=("${dir}/${cmd}")
+        fi
+    done
+    printf '%s\n' "${found[@]}"
+}
+
+# LLVM 工具统一检查：clang-format 必需（版本错了会静默产出错误格式），
+# clang-tidy 属于 lint 增强（clang 编译器由下方编译器循环负责，避免重复记录）
+check_llvm_tool() {
+    local cmd="$1" required="$2" purpose="$3"
+    local resolved paths version major
+    paths="$(scan_path "$cmd" || true)"
+    if [[ -z "$paths" ]]; then
+        if [[ "$required" == "yes" ]]; then
+            record fail "$cmd" "未找到（${purpose}）" \
+                "安装: curl -fsSL https://apt.llvm.org/llvm.sh | sudo bash -s -- ${EXPECTED_LLVM_VERSION} && sudo apt-get install -y ${cmd}-${EXPECTED_LLVM_VERSION}"
+        else
+            record warn "$cmd" "未安装（${purpose} 时需要）" \
+                "sudo apt-get install -y ${cmd}-${EXPECTED_LLVM_VERSION}（apt.llvm.org，与 CI 同源）"
+        fi
+        return
+    fi
+
+    resolved="$(command -v "$cmd")"
+    version="$(get_version "$resolved")"
+    major="$(major_of "$version")"
+
+    # 多副本 = 遮蔽风险，全部摊开
+    local path_count
+    path_count="$(wc -l <<< "$paths")"
+    if [[ "$path_count" -gt 1 && "$VERBOSE" == "true" ]]; then
+        log_debug "PATH 中的全部 ${cmd}:"
+        while IFS= read -r p; do
+            local v
+            v="$("$p" --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1 || true)"
+            log_debug "    ${p}  (${v:-unknown})"
+        done <<< "$paths"
+    fi
+
+    if [[ "$major" != "${EXPECTED_LLVM_VERSION}" ]]; then
+        local hint="与 CI 不一致（实际 ${major}，要求 ${EXPECTED_LLVM_VERSION}，解析自 ${resolved}）。"
+        # 解析路径在用户目录（uv/pip wheel 等）时，遮蔽才是根因，先移除它
+        if [[ "$resolved" == *".local"* || "$resolved" == *"site-packages"* ]]; then
+            hint+="先移除用户目录副本（如 uv tool uninstall ${cmd}），"
+        fi
+        hint+="再安装系统版并钉住: sudo apt-get install -y ${cmd}-${EXPECTED_LLVM_VERSION} && sudo update-alternatives --install /usr/bin/${cmd} ${cmd} /usr/bin/${cmd}-${EXPECTED_LLVM_VERSION} 100"
+        if [[ "$required" == "yes" ]]; then
+            record fail "$cmd" "版本 ${version:-未知}（要求 ${EXPECTED_LLVM_VERSION}.x）" "$hint"
+        else
+            record warn "$cmd" "版本 ${version:-未知}（CI 为 ${EXPECTED_LLVM_VERSION}.x）" "$hint"
+        fi
+        return
+    fi
+
+    # 版本正确但来自用户私有目录：能用，但易被包管理器升级再次破坏
+    if [[ "$resolved" == *".local"* || "$resolved" == *"site-packages"* ]]; then
+        record warn "$cmd" "版本 ${version}（来自用户目录 ${resolved}，易被包管理器升级覆盖）" \
+            "改用与 CI 同源的系统安装: sudo apt-get install -y ${cmd}-${EXPECTED_LLVM_VERSION} 并钉 alternatives"
+        return
+    fi
+    record pass "$cmd" "版本 ${version}（${resolved}）"
+}
+
+log_section "FastQTools 本地环境体检"
+log_info "预期基准: LLVM ${EXPECTED_LLVM_VERSION} / CMake ≥${EXPECTED_CMAKE_MIN}（CI: ${EXPECTED_CMAKE_CI}）/ Conan ${EXPECTED_CONAN_MAJOR}.x（CI: ${EXPECTED_CONAN_CI}）"
+echo ""
+
+# --- LLVM 工具 ---
+check_llvm_tool clang-format yes "lint format/format-check 的执行者，版本错会产出与 CI 相反的格式意见"
+check_llvm_tool clang-tidy no "lint tidy / lint all"
+
+# --- 构建链 ---
+version=""
+if command -v cmake >/dev/null 2>&1; then version="$(get_version cmake)"; fi
+if [[ -z "$version" ]]; then
+    record fail cmake "未找到" "安装: ./scripts/core/install-deps 或参考 docs/getting-started.md"
+elif ! version_ge "$version" "${EXPECTED_CMAKE_MIN}"; then
+    record fail cmake "版本 ${version}（硬性下限 ${EXPECTED_CMAKE_MIN}，无法配置构建）" \
+        "升级到 ≥${EXPECTED_CMAKE_MIN}；CI 使用 ${EXPECTED_CMAKE_CI}"
+elif [[ "$version" == "${EXPECTED_CMAKE_CI}"* ]]; then
+    record pass cmake "版本 ${version}"
+else
+    record pass cmake "版本 ${version}（CI 锁定 ${EXPECTED_CMAKE_CI}，仅影响 CI 缓存复用，可忽略）"
+fi
+
+if command -v ninja >/dev/null 2>&1; then
+    record pass ninja "版本 $(get_version ninja)"
+else
+    record fail ninja "未找到（CMake 生成器）" "sudo apt-get install -y ninja-build"
+fi
+
+version=""
+if command -v conan >/dev/null 2>&1; then version="$(get_version conan)"; fi
+if [[ -z "$version" ]]; then
+    record fail conan "未找到（依赖管理）" "pip install 'conan==${EXPECTED_CONAN_CI}'（与 CI 同版本）"
+elif [[ "$(major_of "$version")" != "${EXPECTED_CONAN_MAJOR}" ]]; then
+    record fail conan "版本 ${version}（要求 ${EXPECTED_CONAN_MAJOR}.x，Conan 1 的命令与缓存布局不兼容）" \
+        "pip install 'conan==${EXPECTED_CONAN_CI}'"
+elif [[ "$version" == "${EXPECTED_CONAN_CI}" ]]; then
+    record pass conan "版本 ${version}"
+else
+    record pass conan "版本 ${version}（CI 锁定 ${EXPECTED_CONAN_CI}，包缓存可能无法跨小版本复用）"
+fi
+
+# --- 编译器（存在性 + C++23 下限；与 CI 对齐仅作建议） ---
+for compiler in gcc clang; do
+    version=""
+    if command -v "$compiler" >/dev/null 2>&1; then version="$(get_version "$compiler")"; fi
+    if [[ -z "$version" ]]; then
+        record warn "$compiler" "未安装（另一编译器可用即可）" ""
+        continue
+    fi
+    major="$(major_of "$version")"
+    local_min="EXPECTED_$(echo "$compiler" | tr '[:lower:]' '[:upper:]')_MIN"
+    if (( major < ${!local_min} )); then
+        record fail "$compiler" "版本 ${version}（C++23 完整支持需 ≥${!local_min}）" \
+            "升级编译器；CI 分别为 GCC 15 / LLVM ${EXPECTED_LLVM_VERSION}"
+    elif [[ "$major" != "${EXPECTED_LLVM_VERSION}" && "$compiler" == "clang" ]]; then
+        record warn "$compiler" "版本 ${version}（CI 为 ${EXPECTED_LLVM_VERSION}.x；构建可行，但二进制与 CI 不逐位可比）" \
+            "sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${EXPECTED_LLVM_VERSION} 100"
+    else
+        record pass "$compiler" "版本 ${version}"
+    fi
+done
+
+# --- 测试与静态分析 ---
+version=""
+if command -v python3 >/dev/null 2>&1; then version="$(get_version python3)"; fi
+if [[ -z "$version" ]]; then
+    record warn python3 "未找到（e2e 测试与 clang-tidy 编译数据库过滤需要）" \
+        "sudo apt-get install -y python3（CI 为 3.13）"
+elif ! version_ge "$version" "${EXPECTED_PYTHON_MIN}"; then
+    record fail python3 "版本 ${version}（下限 ${EXPECTED_PYTHON_MIN}）" "升级 python3"
+else
+    record pass python3 "版本 ${version}"
+fi
+
+if command -v cppcheck >/dev/null 2>&1; then
+    record pass cppcheck "版本 $(get_version cppcheck)"
+else
+    record warn cppcheck "未安装（lint cppcheck / lint all 需要）" "sudo apt-get install -y cppcheck"
+fi
+
+# --- 优化建议类 ---
+if ! command -v ccache >/dev/null 2>&1; then
+    SUGGESTIONS+=("  - ccache: 未安装。CI 用它缓存编译产物（~2 倍重构建加速）: sudo apt-get install -y ccache")
+fi
+
+# --- 汇总 ---
+echo ""
+log_separator
+log_info "统计: ${PASS_COUNT} 通过, ${WARN_COUNT} 提示, ${FAIL_COUNT} 失败"
+if (( ${#SUGGESTIONS[@]} > 0 )); then
+    echo ""
+    log_info "建议:"
+    printf '%s\n' "${SUGGESTIONS[@]}"
+fi
+
+if (( FAIL_COUNT > 0 )); then
+    log_error "存在必需项失败——按上方建议修复后重新运行 ./scripts/core/doctor"
+    exit 1
+fi
+log_success "环境满足项目要求"
+exit 0
