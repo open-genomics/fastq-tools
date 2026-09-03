@@ -82,6 +82,13 @@ auto StatCommand::execute(int argc, char* argv[]) -> int {
         statOpts.jsonOutputPath = result["json"].as<std::string>();
     }
 
+    // stat 无 FASTQ 输出，报告目标只可能与输入文件或彼此别名；
+    // 提前拒绝，避免跑完流水线才发现配置会覆盖数据
+    validateReportTargets(
+        common.inputPath,
+        {},
+        {statOpts.outputStatPath, statOpts.jsonOutputPath, statOpts.signatureReportPath});
+
     fq::statistics::Calculator calculator(std::move(statOpts));
     calculator.run();
     return 0;

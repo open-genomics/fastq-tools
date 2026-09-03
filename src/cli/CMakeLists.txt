@@ -26,6 +26,9 @@ target_link_libraries(fq_cli
 target_include_directories(fq_cli
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
+    PRIVATE
+        # 跨模块内部头（io/path_alias.h），与 fq_processing/fq_statistics 同一模式
+        ${CMAKE_SOURCE_DIR}/src
 )
 
 target_compile_features(fq_cli PUBLIC cxx_std_23)

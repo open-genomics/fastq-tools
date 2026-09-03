@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <vector>
 
 // 前向声明
 namespace cxxopts {
@@ -63,5 +64,13 @@ struct CommonCliOptions {
 };
 
 [[nodiscard]] auto validateQualityEncoding(int qualityEncoding) -> int;
+
+/// @brief 拒绝与 FASTQ 输入/输出或彼此别名的报告目标（在流水线运行前 fail-fast）
+/// @details 报告经临时文件 + rename 发布，会整体覆盖同名目标；别名判定复用
+///          fq::io::pathsAlias。报告路径为空（未启用）或 '-'（stdout）时跳过。
+/// @throws fq::error::ConfigurationError 存在别名冲突
+void validateReportTargets(const std::string& inputPath,
+                           const std::string& outputPath,
+                           const std::vector<std::string>& reportTargets);
 
 }  // namespace fq::cli

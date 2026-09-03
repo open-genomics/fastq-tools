@@ -21,6 +21,15 @@ This root changelog is the maintained project history. Older granular work logs 
 - 修复 `.github/workflows/ci.yml` 的 job 级 `if` 非法使用 `matrix` 上下文导致的整体失效（所有 push 0 秒失败、0 个 job，包括 format gate）——改为 `resolve-matrix` job 用 Python 生成完整矩阵（含 build/test 命令等全部字段）+ `fromJSON` 注入，coverage 依赖同步调整。push/PR 仍只跑 format。
 - `scripts/core/lint` 增加 clang-format 版本守卫：解析到非预期大版本时直接报错并指向 `doctor`，不再带着错误版本产出误导性格式结论。
 
+### Fixed
+- `filter --adapter-seq` 只识别锚定 3' 末端的 adapter（完整贴端或尾部悬出的部分重叠）：不再对 read 中部的偶然内部匹配做截断。旧实现做全文 `find`，短 adapter 或周期性序列命中时会把匹配位置之后的真实插入片段静默剪掉。
+- QC 报告目标与 FASTQ 输入/输出或彼此别名时在参数阶段拒绝：`stat -i x -o x` 不再把输入文件覆盖成报告，`filter --stat <output>` 不再覆盖刚产出的 FASTQ。库层 `writeStatisticsOutputs` 同步兜底校验。
+
+### Changed
+- `ReadMutatorInterface::process()` 返回 `bool`（记录是否被本调用修改），管道据此累计 `modifiedReads`，移除逐 read 全记录比较的热点补偿。自定义 mutator 需适配新签名。
+- 移除无生产调用方的公共 API `FastqBatch::moveRemainderToStart()`（跨批残片由 reader 侧 remainder 处理）。
+- 架构文档对齐 CI 实际触发策略（重任务手动触发、本地优先）与线程口径（CLI `--threads` 默认 1，即默认串行），并在性能特征中补充串行解析/串行压缩的已知限制。
+
 ---
 
 ## [4.1.0] - 2026-08-18

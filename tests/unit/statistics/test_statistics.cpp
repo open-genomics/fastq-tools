@@ -251,6 +251,37 @@ TEST(StatisticsWriterTest, RejectsMultipleStdoutDestinations) {
     }
 }
 
+// 回归：报告目标指向输入 FASTQ（如 stat -i x -o x）会在写出阶段把输入文件
+// 覆盖掉；库层在触碰任何文件之前拒绝该配置。别名经字符串归一化即可判定，
+// 无需目标真实存在，因此这些用例不产生文件 I/O。
+TEST(StatisticsWriterTest, RejectsReportTargetAliasingInputFastq) {
+    FqStatisticResult result;
+
+    fq::statistics::StatisticOptions same;
+    same.inputFastqPath = "in.fastq";
+    same.outputStatPath = "in.fastq";
+    EXPECT_THROW(fq::statistics::writeStatisticsOutputs(same, result),
+                 fq::error::ConfigurationError);
+
+    fq::statistics::StatisticOptions normalized;
+    normalized.inputFastqPath = "in.fastq";
+    normalized.jsonOutputPath = "./in.fastq";
+    EXPECT_THROW(fq::statistics::writeStatisticsOutputs(normalized, result),
+                 fq::error::ConfigurationError);
+}
+
+// 回归：多份报告互为别名时，后写者覆盖先写者，只留下一份（或半份）报告
+TEST(StatisticsWriterTest, RejectsDuplicateReportTargets) {
+    FqStatisticResult result;
+
+    fq::statistics::StatisticOptions opts;
+    opts.inputFastqPath = "in.fastq";
+    opts.outputStatPath = "report.tsv";
+    opts.jsonOutputPath = "report.tsv";
+    EXPECT_THROW(fq::statistics::writeStatisticsOutputs(opts, result),
+                 fq::error::ConfigurationError);
+}
+
 
 // 回归：signatureKmerSize 为 0 时 substr(0,0) 会把空字符串塞进 headKmerCounts，
 // 报告出现空 key 行。库层应把 kmer 大小钳制到 >= 1。

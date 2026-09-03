@@ -92,6 +92,8 @@ public:
 };
 
 fq::processing::Pipeline pipeline;
+pipeline.setInputPath("input.fastq");
+pipeline.setOutputPath("output.fastq");
 pipeline.addReadPredicate(std::make_unique<MyQualityFilter>());
 auto stats = pipeline.run();
 ```

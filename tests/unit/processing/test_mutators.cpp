@@ -351,6 +351,52 @@ TEST_F(AdapterTrimmerTest, GetNameReturnsNonEmpty) {
     EXPECT_FALSE(trimmer.getName().empty());
 }
 
+// 回归：内部完整匹配（后面还有真实序列）只可能来自偶然命中，
+// 3' 端锚定契约下不得截断，否则静默丢弃真实插入片段
+TEST_F(AdapterTrimmerTest, PreservesInternalAdapterMatch) {
+    AdapterTrimmer trimmer({"TTAA"}, 3, 0);
+
+    FastqRecord read{"read1", {}, "TTAACGTACGT", "IIIIIIIIIII", "+"};
+    trimmer.process(read);
+
+    EXPECT_EQ(read.seq, "TTAACGTACGT");
+    EXPECT_EQ(read.qual, "IIIIIIIIIII");
+}
+
+// adapter 尾部悬出 read 末尾的部分重叠：按重叠处截断
+TEST_F(AdapterTrimmerTest, TrimsPartialOverhangAtThreePrimeEnd) {
+    AdapterTrimmer trimmer({"TTAATTAA"}, 4, 0);
+
+    // read 以 adapter 的前 6 个碱基结尾（TTAATT），尾部两个碱基悬出
+    FastqRecord read{"read1", {}, "ACGTTAATT", "IIIIIIIII", "+"};
+    trimmer.process(read);
+
+    EXPECT_EQ(read.seq, "ACG");
+    EXPECT_EQ(read.qual, "III");
+}
+
+// read 整体是 adapter 前缀（贴端匹配的极端情形）：清空 read
+TEST_F(AdapterTrimmerTest, EmptiesReadEntirelyMadeOfAdapter) {
+    AdapterTrimmer trimmer({"TTAATTAA"}, 3, 0);
+
+    FastqRecord read{"read1", {}, "TTAATT", "IIIIII", "+"};
+    trimmer.process(read);
+
+    EXPECT_TRUE(read.seq.empty());
+    EXPECT_TRUE(read.qual.empty());
+}
+
+// process() 返回值契约：实际改动返回 true，未改动返回 false（管道 modifiedReads 依赖）
+TEST_F(AdapterTrimmerTest, ProcessReportsWhetherRecordChanged) {
+    AdapterTrimmer trimmer({"TTAA"}, 3, 0);
+
+    FastqRecord modified{"read1", {}, "ACGTTTAA", "IIIIIIII", "+"};
+    EXPECT_TRUE(trimmer.process(modified));
+
+    FastqRecord untouched{"read2", {}, "ACGTACGT", "IIIIIIII", "+"};
+    EXPECT_FALSE(trimmer.process(untouched));
+}
+
 
 // 回归：最小重叠 0 时 1 字符 overlap + 1 错配必然命中，任何 read 都会被剪掉 3' 端。
 // 库层契约：不允许 0 最小重叠（CLI 侧另有 >=1 校验）。
@@ -482,12 +528,13 @@ TEST_F(MutatorBoundaryTest, MixedQualityPattern) {
 TEST_F(MutatorBoundaryTest, AdapterAtStart) {
     AdapterTrimmer trimmer({"ACGT"}, 4, 0);
 
-    // 接头在开头：find() 命中位置 0，从该位置起全部剪除 → 空 read
+    // 回归：adapter 位于 read 内部（非 3' 端锚定）时不得截断——
+    // 旧实现做全文 find()，会把位置 0 起的匹配连同后续真实序列一起剪掉
     FastqRecord read{"read1", {}, "ACGTTTAA", "IIIIIIII", "+"};
     trimmer.process(read);
 
-    EXPECT_TRUE(read.seq.empty());
-    EXPECT_TRUE(read.qual.empty());
+    EXPECT_EQ(read.seq, "ACGTTTAA");
+    EXPECT_EQ(read.qual, "IIIIIIII");
 }
 
 TEST_F(MutatorBoundaryTest, MultipleAdaptersWithPriority) {

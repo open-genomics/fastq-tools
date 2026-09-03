@@ -11,6 +11,9 @@
 #include "enum_parser.h"
 #include <cxxopts.hpp>
 
+#include "io/path_alias.h"
+#include <fqtools/error/error.h>
+
 namespace fq::cli {
 
 void CommonCliOptions::addOptions(cxxopts::Options& options) {
@@ -102,6 +105,36 @@ auto validateQualityEncoding(int qualityEncoding) -> int {
         throw std::invalid_argument("quality-encoding must be 33 or 64");
     }
     return qualityEncoding;
+}
+
+void validateReportTargets(const std::string& inputPath,
+                           const std::string& outputPath,
+                           const std::vector<std::string>& reportTargets) {
+    // 报错消息用字符串拼接而非 fmt：fq_cli 不链接 fmt，保持依赖面最小
+    for (const auto& target : reportTargets) {
+        if (target.empty() || target == "-") {
+            continue;
+        }
+        if (fq::io::pathsAlias(inputPath, target)) {
+            throw fq::error::ConfigurationError("report target '" + target +
+                                                "' aliases the input FASTQ '" + inputPath +
+                                                "'; choose a different output path");
+        }
+        if (fq::io::pathsAlias(outputPath, target)) {
+            throw fq::error::ConfigurationError("report target '" + target +
+                                                "' aliases the FASTQ output '" + outputPath +
+                                                "'; the report would overwrite the result file");
+        }
+    }
+    for (size_t i = 0; i < reportTargets.size(); ++i) {
+        for (size_t j = i + 1; j < reportTargets.size(); ++j) {
+            if (fq::io::pathsAlias(reportTargets[i], reportTargets[j])) {
+                throw fq::error::ConfigurationError("report targets '" + reportTargets[i] +
+                                                    "' and '" + reportTargets[j] +
+                                                    "' refer to the same file");
+            }
+        }
+    }
 }
 
 }  // namespace fq::cli

@@ -428,4 +428,28 @@ TEST(FilterPlanTest, RejectsAdapterMismatchesAtLeastMinOverlap) {
     EXPECT_THROW(static_cast<void>(buildFilterPlan(parsed, common)), std::invalid_argument);
 }
 
+// 回归：报告目标与 FASTQ 输入/输出或彼此别名时，报告的"临时文件 + rename"发布
+// 会静默覆盖输入文件或已产出的结果文件，必须在参数阶段拒绝
+TEST(ValidateReportTargetsTest, RejectsReportAliasingInput) {
+    EXPECT_THROW(validateReportTargets("in.fastq", "out.fastq", {"in.fastq"}),
+                 fq::error::ConfigurationError);
+}
+
+TEST(ValidateReportTargetsTest, RejectsReportAliasingFastqOutput) {
+    EXPECT_THROW(validateReportTargets("in.fastq", "out.fastq", {"out.fastq"}),
+                 fq::error::ConfigurationError);
+}
+
+TEST(ValidateReportTargetsTest, RejectsDuplicateReportTargets) {
+    EXPECT_THROW(validateReportTargets("in.fastq", "out.fastq", {"r.tsv", "./r.tsv"}),
+                 fq::error::ConfigurationError);
+    EXPECT_THROW(validateReportTargets("in.fastq", "out.fastq", {"a.tsv", "b.tsv", "a.tsv"}),
+                 fq::error::ConfigurationError);
+}
+
+TEST(ValidateReportTargetsTest, AcceptsDistinctAndInactiveTargets) {
+    EXPECT_NO_THROW(
+        validateReportTargets("in.fastq", "out.fastq", {"r.tsv", "r.json", "", "-", "-"}));
+}
+
 }  // namespace fq::cli

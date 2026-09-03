@@ -34,7 +34,12 @@ class ReadMutatorInterface {
 public:
     virtual ~ReadMutatorInterface() = default;
 
-    virtual void process(fq::io::FastqRecord& read) = 0;
+    /**
+     * @brief 对单条读段应用变换
+     * @return 记录是否被本调用改变（任一字段）。管道据此累计 modifiedReads，
+     *         免去修改前后的全记录比较热点；未实际改动时必须返回 false。
+     */
+    virtual auto process(fq::io::FastqRecord& read) -> bool = 0;
 };
 
 }  // namespace fq::processing

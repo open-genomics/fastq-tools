@@ -22,11 +22,14 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include <unistd.h>
 
+#include "io/path_alias.h"
 #include "processing/execution_runtime.h"
 #include "statistics/fq_statistic_worker.h"
+#include <fmt/format.h>
 #include <sys/stat.h>
 
 namespace fq::statistics {
@@ -102,7 +105,7 @@ void writeAtomically(const std::string& target,
 // 这些目标不支持"同目录临时文件 + rename"的原子发布（/dev 下创建临时文件会
 // Permission denied，对设备 rename 也无意义），直接顺序写入。
 auto isSpecialFileTarget(const std::string& target) -> bool {
-    struct stat st {};
+    struct stat st{};
     if (::stat(target.c_str(), &st) != 0) {
         return false;  // 不存在或 stat 失败 → 走原子路径，open 阶段报错
     }
@@ -148,6 +151,34 @@ void writeStatisticsOutputs(const StatisticOptions& options, const FqStatisticRe
     if (stdoutTargets > 1) {
         throw fq::error::ConfigurationError(
             "at most one of --output/--json/--signature-report may be '-' (stdout)");
+    }
+
+    // 报告经"临时文件 + rename"发布，会整体覆盖同名目标：目标指向输入 FASTQ
+    // （stat -i x -o x）或彼此重合时静默毁掉原文件，必须在写出前拒绝
+    std::vector<const std::string*> fileTargets;
+    for (const auto* path :
+         {&options.outputStatPath, &options.jsonOutputPath, &options.signatureReportPath}) {
+        if (!path->empty() && *path != "-") {
+            fileTargets.push_back(path);
+        }
+    }
+    for (const auto* target : fileTargets) {
+        if (fq::io::pathsAlias(options.inputFastqPath, *target)) {
+            throw fq::error::ConfigurationError(fmt::format(
+                "report target '{}' aliases the input FASTQ '{}'; choose a different output path",
+                *target,
+                options.inputFastqPath));
+        }
+    }
+    for (size_t i = 0; i < fileTargets.size(); ++i) {
+        for (size_t j = i + 1; j < fileTargets.size(); ++j) {
+            if (fq::io::pathsAlias(*fileTargets[i], *fileTargets[j])) {
+                throw fq::error::ConfigurationError(
+                    fmt::format("report targets '{}' and '{}' refer to the same file",
+                                *fileTargets[i],
+                                *fileTargets[j]));
+            }
+        }
     }
 
     StatisticsWriterOptions writerOptions;

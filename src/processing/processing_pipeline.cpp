@@ -23,16 +23,6 @@
 
 namespace fq::processing {
 
-namespace {
-
-[[nodiscard]] auto recordsEqual(const fq::io::FastqRecord& lhs, const fq::io::FastqRecord& rhs)
-    -> bool {
-    return lhs.id == rhs.id && lhs.comment == rhs.comment && lhs.seq == rhs.seq &&
-        lhs.qual == rhs.qual && lhs.plus == rhs.plus;
-}
-
-}  // namespace
-
 class Pipeline::Impl {
 public:
     struct Token {
@@ -190,16 +180,16 @@ auto Pipeline::Impl::applyOperations(fq::io::FastqBatch& batch, ProcessingStatis
     const size_t totalInBatch = records.size();
     size_t passedCount = 0;
     const bool hasPredicates = !predicates_.empty();
-    const bool hasMutators = !mutators_.empty();
 
     size_t modifiedCount = 0;
 
     for (size_t i = 0; i < totalInBatch; ++i) {
         auto& read = records[i];
 
-        const auto originalRead = read;
+        // 修改器自行报告是否改动，热点路径不再做修改前后全记录比较
+        bool modified = false;
         for (const auto& mutator : mutators_) {
-            mutator->process(read);
+            modified = mutator->process(read) || modified;
         }
 
         bool passed = !read.empty();
@@ -212,7 +202,7 @@ auto Pipeline::Impl::applyOperations(fq::io::FastqBatch& batch, ProcessingStatis
             }
         }
 
-        if (passed && hasMutators && !recordsEqual(originalRead, read)) {
+        if (passed && modified) {
             ++modifiedCount;
         }
 

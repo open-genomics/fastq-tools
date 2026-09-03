@@ -212,15 +212,3 @@ TEST(PipelineSmokeTest, FastqBatchClearResetsStoredData) {
     EXPECT_TRUE(batch.records().empty());
 }
 
-TEST(PipelineSmokeTest, FastqBatchMovesRemainderToStart) {
-    fq::io::FastqBatch batch(1024, 1);
-    batch.buffer().assign({'A', 'B', 'C', 'D', 'E'});
-
-    const auto remainder = batch.moveRemainderToStart(2);
-
-    EXPECT_EQ(remainder, 3);
-    ASSERT_EQ(batch.buffer().size(), 3);
-    EXPECT_EQ(batch.buffer()[0], 'C');
-    EXPECT_EQ(batch.buffer()[1], 'D');
-    EXPECT_EQ(batch.buffer()[2], 'E');
-}

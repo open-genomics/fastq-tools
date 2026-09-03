@@ -4,10 +4,10 @@
 #include "fqtools/io/fastq_reader.h"
 #include "fqtools/io/fastq_writer.h"
 
-#include <filesystem>
 #include <stdexcept>
 #include <utility>
 
+#include "io/path_alias.h"
 #include "processing/resolved_runtime_config.h"
 
 namespace {
@@ -27,25 +27,6 @@ auto makeWriterOptions(const fq::processing::ResolvedRuntimeConfig& config)
     options.zlibBufferBytes = config.zlibBufferBytes;
     options.outputBufferBytes = config.writerBufferBytes;
     return options;
-}
-
-auto pathsAlias(const std::string& inputPath, const std::string& outputPath) -> bool {
-    if (inputPath.empty() || outputPath.empty()) {
-        return false;
-    }
-    if (inputPath == "-" || outputPath == "-") {
-        return false;
-    }
-    std::error_code error;
-    const auto input = std::filesystem::absolute(inputPath, error).lexically_normal();
-    error.clear();
-    const auto output = std::filesystem::absolute(outputPath, error).lexically_normal();
-    if (input == output) {
-        return true;
-    }
-    error.clear();
-    return std::filesystem::exists(input, error) && std::filesystem::exists(output, error) &&
-        std::filesystem::equivalent(input, output, error) && !error;
 }
 
 }  // namespace
@@ -95,7 +76,7 @@ auto ExecutionRuntime::operator=(ExecutionRuntime&&) noexcept -> ExecutionRuntim
 auto ExecutionRuntime::executeErased(const ExecutionRuntimeRequest& request,
                                      ExecutionOperation& operation) -> ErasedExecutionOutcome {
     request.options.validate();
-    if (request.outputPath && pathsAlias(request.inputPath, *request.outputPath)) {
+    if (request.outputPath && fq::io::pathsAlias(request.inputPath, *request.outputPath)) {
         throw fq::error::ConfigurationError("input and output paths must be different");
     }
     if (impl_->customReaderConfigured && !impl_->customReader) {

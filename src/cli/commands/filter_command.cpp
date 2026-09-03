@@ -77,6 +77,11 @@ auto FilterCommand::execute(int argc, char* argv[]) -> int {
             throw fq::error::ConfigurationError(
                 "cannot write FASTQ and a QC report to stdout; choose one '-' destination");
         }
+        // 报告与 FASTQ 输入/输出别名会在 rename 发布时互相覆盖，参数阶段提前拒绝
+        // （与输入的冲突在 writeStatisticsOutputs 仍有库层兜底）
+        validateReportTargets(common.inputPath,
+                              common.outputPath,
+                              {statOpts.outputStatPath, statOpts.jsonOutputPath});
         // kmer/modulo 与报告外推共用 statOpts 同一来源，
         // 避免两处独立默认值未来暴露 CLI 参数时失同步
         pipeline_.enableReadStatistics(statOpts.qualityEncoding,

@@ -5,7 +5,6 @@
 
 #pragma once
 
-#include <cstring>
 #include <string_view>
 #include <vector>
 
@@ -95,22 +94,6 @@ public:
         return buffer_;
     }
     /// @}
-
-    /// 将未处理完的碎片移动到缓冲区头部，供 Reader 处理跨批次的不完整记录
-    auto moveRemainderToStart(size_t validEndPos) -> size_t {
-        if (validEndPos >= buffer_.size()) {
-            buffer_.clear();
-            return 0;
-        }
-        size_t remainderLen = buffer_.size() - validEndPos;
-        if (remainderLen > 0) {
-            std::memmove(buffer_.data(), buffer_.data() + validEndPos, remainderLen);
-            buffer_.resize(remainderLen);
-        } else {
-            buffer_.clear();
-        }
-        return remainderLen;
-    }
 
 private:
     std::vector<char> buffer_;

@@ -16,7 +16,7 @@ public:
                    TrimMode mode = TrimMode::Both,
                    int qualityEncoding = 33);
 
-    void process(fq::io::FastqRecord& read) override;
+    auto process(fq::io::FastqRecord& read) -> bool override;
 
     [[nodiscard]] auto getName() const -> std::string;
     [[nodiscard]] auto getDescription() const -> std::string;
@@ -43,7 +43,7 @@ public:
 
     LengthTrimmer(size_t targetLength, TrimStrategy strategy = TrimStrategy::MaxLength);
 
-    void process(fq::io::FastqRecord& read) override;
+    auto process(fq::io::FastqRecord& read) -> bool override;
 
     [[nodiscard]] auto getName() const -> std::string;
     [[nodiscard]] auto getDescription() const -> std::string;
@@ -59,7 +59,7 @@ public:
                    size_t minOverlap = 3,
                    size_t maxMismatches = 1);
 
-    void process(fq::io::FastqRecord& read) override;
+    auto process(fq::io::FastqRecord& read) -> bool override;
 
     [[nodiscard]] auto getName() const -> std::string;
     [[nodiscard]] auto getDescription() const -> std::string;
@@ -81,7 +81,7 @@ public:
 
     PolyTailTrimmer(TailKind kind, size_t minRunLength = 10);
 
-    void process(fq::io::FastqRecord& read) override;
+    auto process(fq::io::FastqRecord& read) -> bool override;
 
     [[nodiscard]] auto getName() const -> std::string;
     [[nodiscard]] auto getDescription() const -> std::string;

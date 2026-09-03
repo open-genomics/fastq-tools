@@ -11,7 +11,7 @@ FastQTools 是一个 C++23 FASTQ 质控工具，覆盖测序数据日常 QC 的�
 - **窄而深，而非宽而浅。** 与 fastp（全能 QC）、seqkit（全能工具箱）不同，FastQTools 只做 stat + filter + 库 API，但把这三件事的内核做到现代 C++23 的工程上限。
 - **把预算投到看不见的地方。** 零拷贝、对象池、流水线保序、消毒剂 CI——这些是用户感知不到、但决定工程质量的细节。
 - **约束即安全。** `FastqRecord` 不能逃逸批次、`FastqBatch::clear()` 不释放内存、流水线首尾串行——刻意约束换来零拷贝、确定顺序与有界内存。
-- **CI 是质量合同。** push/PR 均触发，sanitizer 矩阵随 PR 与主分支运行；不是可选的"额外"。fuzzer target 位于 `tools/fuzz/`，CI 每 PR 对 4 个 target 各跑 60s 冒烟。
+- **CI 是质量合同，重任务本地优先。** push/PR 自动运行秒级 format 检查；静态分析、多编译器矩阵、sanitizer、fuzz、coverage 由 `workflow_dispatch` 手动触发（Actions 页选择 suite），等价命令见 `ci.yml` 头部注释。fuzzer target 位于 `tools/fuzz/`，手动 fuzz 冒烟对 4 个 target 各跑 60s。
 
 ### 与同类工具的定位
 
@@ -117,11 +117,11 @@ Sequential 与 oneTBB 共用 reader、writer、batch operation 和计量契约�
 | --- | --- | --- |
 | `Automatic` + 单线程 | Sequential | 最小调度开销 |
 | `Automatic` + 自定义 Reader/Writer | Sequential | 保持外部 adapter 的保守线程契约 |
-| `Automatic` + 原生 I/O + 多线程 | oneTBB | CLI 默认并行路径 |
+| `Automatic` + 原生 I/O + 多线程 | oneTBB | `--threads > 1` 时的 CLI 与库并行路径 |
 | 显式 Sequential / oneTBB | 对应 backend | 契约测试和公平基准 |
 | Taskflow | v4 已移除 | 仅保留历史 benchmark/决策记录 |
 
-CLI 始终使用 `Automatic`；实验 backend 选择不扩散到 CLI 参数或公共库 API。
+CLI 始终使用 `Automatic`；实验 backend 选择不扩散到 CLI 参数或公共库 API。注意 CLI `--threads` 默认为 1，即**默认走 Sequential 串行**；显式传入大于 1 的线程数（且无自定义 Reader/Writer）才进入 oneTBB 并行路径。
 
 #### 统一运行时配置
 
@@ -191,13 +191,15 @@ I/O seam 直接承载 runtime 需要的完整契约，不再探测具体类型�
 
 ### 7. 质量门：CI 矩阵 + 消毒剂 + 模糊测试
 
-CI（`.github/workflows/ci.yml`）push/PR 均触发，sanitizer 矩阵随 PR 与主分支运行，包含：
-- clang-format 格式检查
-- clang-tidy + cppcheck 静态分析
-- GCC Release / Clang Release / Clang ASan / Clang TSan / Clang UBSan 五矩阵构建 + 测试
-- fuzzer target 在 `tools/fuzz/`（fastq_parser_fuzzer 等），CI 每 PR 跑 60s fuzz 冒烟（见 fuzz-smoke job）
+CI（`.github/workflows/ci.yml`）的触发策略是**轻量自动、重任务手动**（见 `ci.yml` 头部注释）：
+- push/PR 自动：clang-format 格式检查（秒级，无构建）
+- `workflow_dispatch` 手动（Actions 页选择 suite：full/quick/sanitizers/coverage/fuzz）：
+  - clang-tidy + cppcheck 静态分析
+  - GCC Release / Clang Release / Clang ASan / Clang TSan / Clang UBSan 矩阵构建 + 测试
+  - fuzzer target 在 `tools/fuzz/`（fastq_parser_fuzzer 等）跑 60s fuzz 冒烟（fuzz-smoke job）
+  - 覆盖率报告
 
-**为什么**：C++ 内存安全是核心风险。ASan 在 CI 里常态化跑，能在合并前抓到越界和 UAF。fuzzer target 针对解析器入口，因为 FASTQ 输入是外部不可信数据；CI 每 PR 对 4 个 fuzzer 跑 60s 冒烟，本地可用 libFuzzer 长跑深挖。静态分析抓 API 误用和现代 C++ 反模式。
+**为什么**：单人项目下重任务（全矩阵构建 + sanitizer）单次十余分钟，随每个 push 自动跑的 Actions 成本收益失衡，故降为手动触发、重任务优先在本地运行（`./scripts/core/build --sanitizer asan && ./scripts/core/test` 与 CI 等价，合并前本地跑完）。C++ 内存安全是核心风险，ASan 常态化运行能在合并前抓到越界和 UAF；fuzzer 针对解析器入口，因为 FASTQ 输入是外部不可信数据，本地可用 libFuzzer 长跑深挖。静态分析抓 API 误用和现代 C++ 反模式。
 
 ## 性能特征
 
@@ -211,6 +213,15 @@ v4 性能快照固定为 1M reads × 150 bp、seed=42、5 次重复，并直接�
 | filter baseline | 125,623 reads/s（38.0 MiB/s） |
 
 这些数值仅用于同机器、同命令的相对比较；当前 WSL2 的 `real_time` 被放大，stat CPU clock 的重复 CV 也超过 5%，因此没有据此实施 Writer 或统计热点优化。完整原始 JSON、环境和优化门槛见 [`docs/performance`](./performance/README.md)。
+
+#### 已知限制：串行段的吞吐天花板
+
+三级流水线的首尾两级是串行的（见"为什么第一级和第三级是串行"），这带来两个如实承认的天花板：
+
+- **解析与 gzip 解压在串行段。** FASTQ 解析（行定位、字段切分、校验）随读取执行，gzip 解压同样只能顺序进行。轻过滤负载（谓词/修改器开销小）下并行段很快空闲，加速比受串行解析钳制；重负载（`--stat` 的逐碱基/逐位置统计）下并行段占主导，天花板不明显。
+- **gzip 压缩在串行段。** 写出侧用 zlib-ng gz API 顺序压缩，`filter -o out.fq.gz` 的吞吐受压缩速度钳制（见上表 gzip-6 writer 基准），没有 bgzip/pigz 式的块级并行压缩。
+
+两者的共同出路是 chunk 级并行（记录边界同步解析、块级并行压缩），但会改变"单缓冲零拷贝批次"模型，当前刻意不纳入。
 
 ## 测试策略
 

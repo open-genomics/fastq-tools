@@ -24,9 +24,9 @@ QualityTrimmer::QualityTrimmer(double qualityThreshold,
       trimMode_(mode),
       qualityEncoding_(qualityEncoding) {}
 
-void QualityTrimmer::process(fq::io::FastqRecord& read) {
+auto QualityTrimmer::process(fq::io::FastqRecord& read) -> bool {
     if (read.empty()) {
-        return;
+        return false;
     }
 
     size_t originalLen = read.seq.size();
@@ -54,16 +54,19 @@ void QualityTrimmer::process(fq::io::FastqRecord& read) {
 
     // Check min length
     if (newLen < minLength_) {
-        // Filter out (make empty)
+        // Filter out (make empty)；走到这里 read 非空，必然发生了修改
         read.seq = {};
         read.qual = {};
-    } else {
-        // Apply trim
-        if (newLen < originalLen) {
-            read.seq = read.seq.substr(start, newLen);
-            read.qual = read.qual.substr(start, newLen);
-        }
+        return true;
     }
+
+    // Apply trim
+    if (newLen < originalLen) {
+        read.seq = read.seq.substr(start, newLen);
+        read.qual = read.qual.substr(start, newLen);
+        return true;
+    }
+    return false;
 }
 
 auto QualityTrimmer::trimFivePrime(std::string_view sequence, std::string_view quality) const
@@ -139,16 +142,17 @@ auto QualityTrimmer::getDescription() const -> std::string {
 LengthTrimmer::LengthTrimmer(size_t targetLength, TrimStrategy strategy)
     : targetLength_(targetLength), strategy_(strategy) {}
 
-void LengthTrimmer::process(fq::io::FastqRecord& read) {
+auto LengthTrimmer::process(fq::io::FastqRecord& read) -> bool {
     const size_t len = read.seq.size();
     if (len <= targetLength_) {
-        return;
+        return false;
     }
     // MaxLength: 从 3' 端截断，保留前 N 个碱基；
     // FromStart: 从 5' 端截断，保留末尾 N 个碱基
     const size_t start = (strategy_ == TrimStrategy::FromStart) ? (len - targetLength_) : 0;
     read.seq = read.seq.substr(start, targetLength_);
     read.qual = read.qual.substr(start, targetLength_);
+    return true;
 }
 
 auto LengthTrimmer::getName() const -> std::string {
@@ -172,14 +176,12 @@ AdapterTrimmer::AdapterTrimmer(const std::vector<std::string>& adapterSequences,
     }
 }
 
-void AdapterTrimmer::process(fq::io::FastqRecord& read) {
+auto AdapterTrimmer::process(fq::io::FastqRecord& read) -> bool {
     if (read.empty()) {
-        return;
+        return false;
     }
 
-    // Simple implementation: check 3' end for adapter
-    // If found, trim from that position
-
+    // 只检查 3' 端锚定的 adapter，取最早命中的起点（保留最长插入片段）
     size_t bestPos = std::string::npos;  // Position to trim from (smallest index)
 
     for (const auto& adapter : adapters_) {
@@ -195,47 +197,32 @@ void AdapterTrimmer::process(fq::io::FastqRecord& read) {
         // Trim everything from bestPos
         read.seq = read.seq.substr(0, bestPos);
         read.qual = read.qual.substr(0, bestPos);
+        return true;
     }
+    return false;
 }
 
 auto AdapterTrimmer::findAdapter(std::string_view sequence, std::string_view adapter) const
     -> size_t {
-    // Very basic implementation: search for exact match or partial overlap at 3' end
-    // Ideally use semi-global alignment or specialized library (e.g. ksw2)
-    // For simplicity here: check suffix of seq vs prefix of adapter
-
-    // 1. Check if adapter is inside sequence
+    // 只识别锚定 3' 末端的 adapter：完整贴端匹配或尾部悬出 read 末尾的部分重叠。
+    // 刻意不做全文内部搜索——read 中部偶然出现的 adapter 子序列（短 adapter、
+    // poly-A 类周期序列尤其容易命中）会把后续真实插入片段静默剪掉（数据损失）。
+    // 完整贴端匹配同样由下方重叠循环覆盖（overlapLen == adLen、mismatches == 0）。
     if (adapter.empty() || sequence.size() < minOverlap_ || adapter.size() < minOverlap_) {
         return std::string::npos;
     }
 
-    size_t pos = sequence.find(adapter);
-    if (pos != std::string_view::npos) {
-        return pos;
-    }
+    const size_t seqLen = sequence.size();
+    const size_t adLen = adapter.size();
 
-    // 2. Check 3' overlap
-    // Adapter starts within sequence and continues
-    // sequence: ...XXXXYYYY
-    // adapter:     XXXXYYYYZZZZ...
-
-    size_t seqLen = sequence.size();
-    size_t adLen = adapter.size();
-
-    // We look for overlap of at least minOverlap_
-    // Start checking from pos = seqLen - adLen (or 0)
-    // We shift adapter along the sequence 3' end
-
-    size_t startCheck = (seqLen > adLen) ? (seqLen - adLen) : 0;
-
+    // 起点 i 的合法窗口：adapter 贴端（i = seqLen - adLen，若 adapter 不长于 read）
+    // 到最小重叠下限（i = seqLen - minOverlap_）；i 越靠后 adapter 悬出越多
+    const size_t startCheck = (seqLen > adLen) ? (seqLen - adLen) : 0;
     const size_t lastStart = seqLen - minOverlap_;
-    for (size_t i = startCheck; i <= lastStart; ++i) {
-        // Compare sequence[i...] with adapter[0...]
-        size_t overlapLen = seqLen - i;
-        // If overlapLen > adLen, logic error above, but loop handles it
 
-        size_t mismatches = countMismatches(sequence.substr(i), adapter.substr(0, overlapLen));
-        if (mismatches <= maxMismatches_) {
+    for (size_t i = startCheck; i <= lastStart; ++i) {
+        const size_t overlapLen = seqLen - i;
+        if (countMismatches(sequence.substr(i), adapter.substr(0, overlapLen)) <= maxMismatches_) {
             return i;
         }
     }
@@ -272,18 +259,19 @@ auto AdapterTrimmer::getDescription() const -> std::string {
 PolyTailTrimmer::PolyTailTrimmer(TailKind kind, size_t minRunLength)
     : kind_(kind), minRunLength_(std::max<size_t>(1, minRunLength)) {}
 
-void PolyTailTrimmer::process(fq::io::FastqRecord& read) {
+auto PolyTailTrimmer::process(fq::io::FastqRecord& read) -> bool {
     if (read.empty()) {
-        return;
+        return false;
     }
 
     const size_t trimPos = trimPosition(read.seq);
     if (trimPos >= read.seq.size()) {
-        return;
+        return false;
     }
 
     read.seq = read.seq.substr(0, trimPos);
     read.qual = read.qual.substr(0, trimPos);
+    return true;
 }
 
 auto PolyTailTrimmer::getName() const -> std::string {
