@@ -151,7 +151,12 @@ auto LengthTrimmer::process(fq::io::FastqRecord& read) -> bool {
     // FromStart: 从 5' 端截断，保留末尾 N 个碱基
     const size_t start = (strategy_ == TrimStrategy::FromStart) ? (len - targetLength_) : 0;
     read.seq = read.seq.substr(start, targetLength_);
-    read.qual = read.qual.substr(start, targetLength_);
+    // qual 可能短于 seq：不等长记录是合法输入（见 tools/fuzz/fastq_mutator_fuzzer.cpp
+    // 的 fuzzLengthTrimmer 说明，允许产出不等长结果）。而 string_view::substr 在
+    // pos > size() 时抛 std::out_of_range——FromStart 下 start 由 seq.size() 推出，
+    // qual 为空时必然越界，异常逃逸到 fuzzer 即 std::terminate。
+    // 夹紧 pos 后，不等长输入产出不等长结果，与契约一致。
+    read.qual = read.qual.substr(std::min(start, read.qual.size()), targetLength_);
     return true;
 }
 

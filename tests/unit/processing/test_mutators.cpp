@@ -250,6 +250,32 @@ TEST_F(LengthTrimmerTest, HandlesEmptyRead) {
     EXPECT_TRUE(read.seq.empty());
 }
 
+// 回归（CI fuzz 发现）：seq 与 qual 不等长是合法输入——见
+// tools/fuzz/fastq_mutator_fuzzer.cpp 中 fuzzLengthTrimmer 的说明，允许产出
+// 不等长结果。而 string_view::substr 在 pos > size() 时抛 std::out_of_range：
+// FromStart 下 start 由 seq.size() 推出，qual 为空/偏短时 pos 越界，
+// 异常逃逸即 std::terminate。
+TEST_F(LengthTrimmerTest, FromStartWithEmptyQualDoesNotThrow) {
+    LengthTrimmer trimmer(3, LengthTrimmer::TrimStrategy::FromStart);
+
+    FastqRecord read{"read1", {}, "ACGTACGT", {}, "+"};
+    EXPECT_NO_THROW(trimmer.process(read));
+
+    EXPECT_EQ(read.seq, "CGT");
+    EXPECT_TRUE(read.qual.empty());
+}
+
+TEST_F(LengthTrimmerTest, FromStartWithShorterQualDoesNotThrow) {
+    LengthTrimmer trimmer(3, LengthTrimmer::TrimStrategy::FromStart);
+
+    FastqRecord read{"read1", {}, "ACGTACGT", "II", "+"};  // qual 短于 seq
+    EXPECT_NO_THROW(trimmer.process(read));
+
+    EXPECT_EQ(read.seq, "CGT");
+    // pos 被夹紧到 qual.size()，产出不等长结果而非异常
+    EXPECT_TRUE(read.qual.empty());
+}
+
 TEST_F(LengthTrimmerTest, GetNameReturnsNonEmpty) {
     LengthTrimmer trimmer(3);
 
