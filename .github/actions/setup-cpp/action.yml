@@ -194,6 +194,23 @@ runs:
         fi
         if [[ '${{ inputs.install-clang-format }}' == 'true' ]]; then
           sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-${{ inputs.llvm-version }} 100
+
+          # runner 镜像自带的 clang-format 若不是 update-alternatives 管理的，上面的
+          # 注册不足以改变 /usr/bin/clang-format 的实际指向——实测 ubuntu-24.04 上
+          # 执行后仍解析到镜像自带的 18，导致 lint 的版本守卫在 CI 直接失败。
+          # 这里显式校验解析结果，不一致时改用 /usr/local/bin 软链：PATH 中
+          # /usr/local/bin 先于 /usr/bin，必然生效。
+          hash -r
+          resolved_version="$(clang-format --version 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+          if [[ "$resolved_version" != '${{ inputs.llvm-version }}' ]]; then
+            echo "clang-format 解析到 ${resolved_version:-未知}（$(command -v clang-format 2>/dev/null || echo '未找到')），改用 /usr/local/bin 软链"
+            sudo ln -sf "/usr/bin/clang-format-${{ inputs.llvm-version }}" /usr/local/bin/clang-format
+            hash -r
+          fi
+
+          echo "clang-format 就绪: $(clang-format --version) @ $(command -v clang-format)"
+          # 版本仍不符时下游 lint 的版本守卫会失败；在此提前失败更易定位
+          [[ "$(clang-format --version | grep -oE '[0-9]+' | head -1)" == '${{ inputs.llvm-version }}' ]]
         fi
 
     - name: Install Conan and Python dependencies
