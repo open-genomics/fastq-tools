@@ -12,10 +12,8 @@ add_fq_test(test_io         "unit" 60  io/test_fastq_reader.cpp io/test_writer.c
 target_link_libraries(test_io PRIVATE ZLIB::ZLIB)
 add_fq_test(test_processing "unit" 60  processing/test_pipeline_smoke.cpp processing/test_resolved_runtime_config.cpp processing/test_execution_runtime.cpp processing/test_pipeline_read_statistics.cpp)
 add_fq_test(test_cli        "unit" 60  cli/test_filter_plan.cpp cli/test_enum_parser.cpp cli/test_command_registry.cpp)
-# fmt 需显式：fq_cli 以 PRIVATE 链接 fmt（不向下游传播），而本测试的
-# test_command_registry.cpp 经 fqtools/logging.h 间接使用 fmt。
-# 与本文件里 test_io 显式链接 ZLIB 是同一模式。
-target_link_libraries(test_cli PRIVATE fq_cli fmt::fmt)
+# fmt 无需在此声明：add_fq_test 已链接 fq_lib，后者 INTERFACE 传播 fmt::fmt。
+target_link_libraries(test_cli PRIVATE fq_cli)
 add_fq_test(test_predicates "unit" 60  processing/test_predicates.cpp)
 add_fq_test(test_mutators   "unit" 60  processing/test_mutators.cpp)
 add_fq_test(test_statistics "unit" 60  statistics/test_statistics.cpp statistics/test_statistics_report.cpp)

@@ -43,6 +43,19 @@ target_link_libraries(fq_runtime
         fq_stat_core
         fq_processing
         fq_statistics
+        # fmt 与上面那行 include/ 是同一件事的两半：include/fqtools/logging.h
+        # 是公共头，其内联函数直接使用 fmt。本目标既然向下游传播「能看见
+        # logging.h」，就必须同时传播「能编译 logging.h」所需的 fmt。
+        #
+        # 之所以挂在这里而不是让各目标自行声明：依赖以 PRIVATE 链接时不向下游
+        # 传播，于是「谁 include 了 logging.h」与「谁链接了 fmt」变成两份需要
+        # 人工保持同步的清单——实测已漏过两处（fq_cli、tests/unit/test_cli），
+        # 且因开发机装有系统 fmt 而只在干净环境暴露。挂到本目标后，这两个集合
+        # 由构造保证一致，不再有遗漏面。
+        #
+        # 导出侧无需额外处理：cmake/FastQToolsConfig.cmake.in 早已声明
+        # find_dependency(fmt CONFIG) 并处理了 Conan 的 fmt-header-only 别名。
+        fmt::fmt
 )
 
 target_include_directories(fq_runtime

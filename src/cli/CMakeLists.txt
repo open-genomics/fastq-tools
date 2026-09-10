@@ -20,11 +20,8 @@ target_link_libraries(fq_cli
     PUBLIC
         cxxopts::cxxopts
     PRIVATE
+        # fmt 无需在此声明：fq_runtime 已 INTERFACE 传播 fmt::fmt。
         fq_runtime
-        # 本库的 .cpp 经 fqtools/logging.h 间接使用 fmt。与 io/processing/
-        # statistics/error 四个库一致，按 PRIVATE 链接（不暴露给下游）。
-        # 缺此条时，本库编译单元拿不到 fmt 的 include 路径。
-        fmt::fmt
 )
 
 target_include_directories(fq_cli
