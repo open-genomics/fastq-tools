@@ -174,10 +174,15 @@ jobs:
 
   build-and-test:
     name: ${{ matrix.name }}
+    # 重任务：矩阵由 resolve-matrix 计算——push/PR 不跑，workflow_dispatch 按 suite 展开。
+    #
+    # 必须显式用 job 级 if 跳过：空矩阵并不会让本 job 变成 skipped，GitHub 会干脆
+    # 不创建任何 job，并把**整个 run 判为 failure**——即使其余 job 全绿。实测
+    # push 触发的 run 只有 5 个 job（矩阵 job 缺席）却结论 failure。
+    # if 在 job 级可用（只有 matrix 上下文不可用），故不能靠矩阵本身表达这个条件。
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     needs: resolve-matrix
-    # 重任务：矩阵由 resolve-matrix 计算——push/PR 为空数组（本 job 跳过），
-    # workflow_dispatch 按 suite 展开。不再需要 job 级 if（matrix 上下文在此不可用）。
     strategy:
       fail-fast: false
       matrix:
