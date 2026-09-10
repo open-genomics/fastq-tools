@@ -134,8 +134,13 @@ auto fuzzAdapterTrimmer(FuzzedDataProvider& dp, const std::string& seqBuf, const
     if (adapters.empty()) {
         return;  // AdapterTrimmer 构造允许空 vector，但无意义
     }
-    const auto minOverlap = dp.ConsumeIntegralInRange<size_t>(0, 64);
-    const auto maxMismatches = dp.ConsumeIntegralInRange<size_t>(0, 32);
+    // AdapterTrimmer 的构造函数有前置条件 maxMismatches < minOverlap（且 minOverlap
+    // 被夹紧到 >=1），违反即抛 std::invalid_argument。此前这里独立生成两个区间，
+    // 非法组合必然命中，异常逃逸到 libFuzzer 就是 std::terminate——
+    // 那是 fuzzer 违反合法前置条件，不是产品缺陷。
+    // 改为在合法域内生成：先定 minOverlap，再让 maxMismatches 严格小于它。
+    const auto minOverlap = dp.ConsumeIntegralInRange<size_t>(1, 64);
+    const auto maxMismatches = dp.ConsumeIntegralInRange<size_t>(0, minOverlap - 1);
 
     fq::processing::AdapterTrimmer trimmer(adapters, minOverlap, maxMismatches);
 
