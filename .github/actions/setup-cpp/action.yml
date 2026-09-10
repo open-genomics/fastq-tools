@@ -191,6 +191,26 @@ runs:
         fi
         if [[ '${{ inputs.install-clang-tools }}' == 'true' ]]; then
           sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-${{ inputs.llvm-version }} 100
+
+          # 与下方 clang-format 同样的问题：runner 镜像自带的同名工具若不是
+          # update-alternatives 管理的，注册后指向不会改变。这里同样校验并在必要时
+          # 用 /usr/local/bin 软链兜底。
+          #
+          # 差别在于此处**不**做硬断言：clang-format 有 scripts/core/lint 的版本守卫
+          # 在下游兜底，断言只是把失败提前；clang-tidy 目前没有版本守卫，加断言反而
+          # 可能因 --version 输出格式差异把一个潜在问题变成真实失败。仅告警不拦截。
+          hash -r
+          tidy_version="$(clang-tidy --version 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+          if [[ "$tidy_version" != '${{ inputs.llvm-version }}' ]]; then
+            echo "clang-tidy 解析到 ${tidy_version:-未知}（$(command -v clang-tidy 2>/dev/null || echo '未找到')），改用 /usr/local/bin 软链"
+            sudo ln -sf "/usr/bin/clang-tidy-${{ inputs.llvm-version }}" /usr/local/bin/clang-tidy
+            hash -r
+            resolved_tidy="$(clang-tidy --version 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+            if [[ "$resolved_tidy" != '${{ inputs.llvm-version }}' ]]; then
+              echo "::warning::clang-tidy 仍解析到 ${resolved_tidy:-未知}，lint tidy 可能使用错误版本"
+            fi
+          fi
+          echo "clang-tidy: $(clang-tidy --version 2>&1 | head -1) @ $(command -v clang-tidy 2>/dev/null)"
         fi
         if [[ '${{ inputs.install-clang-format }}' == 'true' ]]; then
           sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-${{ inputs.llvm-version }} 100
