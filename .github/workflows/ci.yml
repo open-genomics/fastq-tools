@@ -398,6 +398,10 @@ jobs:
           verbose: true
 
       - name: Upload coverage artifacts
+        # if: always() 是必要的：上面「Generate coverage report」带 --check-threshold，
+        # 覆盖率未达标时该步非零退出，默认会跳过本步——而未达标恰恰是最需要拿到
+        # 报告、看清缺口在哪的时候。此前每次门槛失败，报告都被丢弃。
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: coverage-report
