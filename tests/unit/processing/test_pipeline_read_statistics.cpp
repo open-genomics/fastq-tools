@@ -12,7 +12,7 @@
 
 namespace {
 
-auto writeFastqInput(fq::test::TempDirectory& tempDir,
+auto writeFastqInput(const fq::test::TempDirectory& tempDir,
                      std::string_view filename,
                      std::string_view content) -> std::string {
     const auto path = tempDir.path() / filename;

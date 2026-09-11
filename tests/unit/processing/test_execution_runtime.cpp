@@ -117,7 +117,7 @@ public:
     }
 };
 
-auto writeFastqInput(fq::test::TempDirectory& tempDir,
+auto writeFastqInput(const fq::test::TempDirectory& tempDir,
                      std::string_view filename,
                      std::string_view content) -> std::string {
     const auto path = tempDir.path() / filename;
@@ -126,7 +126,7 @@ auto writeFastqInput(fq::test::TempDirectory& tempDir,
     return path.string();
 }
 
-auto writeGeneratedFastqInput(fq::test::TempDirectory& tempDir,
+auto writeGeneratedFastqInput(const fq::test::TempDirectory& tempDir,
                               std::string_view filename,
                               size_t recordCount) -> std::string {
     const auto path = tempDir.path() / filename;
@@ -373,8 +373,8 @@ private:
     bool failOnProcess_;
 };
 
-auto makeOneTbbContext(fq::test::TempDirectory& tempDir, std::shared_ptr<fq::io::IWriter> writer)
-    -> ExecutionBackendContext {
+auto makeOneTbbContext(const fq::test::TempDirectory& tempDir,
+                       std::shared_ptr<fq::io::IWriter> writer) -> ExecutionBackendContext {
     ProcessingOptions options;
     options.batchSize = 1;
     options.threadCount = 2;
