@@ -189,6 +189,12 @@ FILTER_ARGS=(
     '*/third_party/*'
     '*/build*/*'
     '*/_deps/*'
+    # Conan 缓存中的依赖头文件（fmt / nlohmann_json / cxxopts / gtest …）。
+    # 与上面的 /usr、third_party、_deps 同属外部依赖，此前唯独漏了这一类，
+    # 导致它们被计入分母：实测 6296 行（占总行数 73%）落在 ~/.conan2 下，
+    # 且天然不可能被项目测试覆盖，把整体覆盖率从 85% 拉到 56%，
+    # 使门槛检查长期误报失败。模板头文件随用法实例化，测它们既无意义也不可能。
+    '*/.conan2/*'
     --output-file "$COVERAGE_FILTERED"
     --ignore-errors unused
     --ignore-errors mismatch
