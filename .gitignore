@@ -97,6 +97,9 @@ tests/data/tmp/
 
 # ===== 覆盖率与分析数据 =====
 coverage/
+# coverage-report 脚本的默认输出目录（-o coverage_report），名字与上面的
+# coverage/ 不同，此前未被覆盖，本地跑一次覆盖率就会留下未跟踪目录
+coverage_report/
 !build-config/coverage/
 *.gcda
 *.gcno
