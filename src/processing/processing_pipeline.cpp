@@ -160,7 +160,9 @@ auto Pipeline::Impl::run() -> ProcessingStatistics {
     auto startTime = std::chrono::steady_clock::now();
     auto outcome = runtime.execute(runtimePlan, *this);
     qc_ = std::move(outcome.result.qc);
-    auto stats = std::move(outcome.result.processing);
+    // ProcessingStatistics 可平凡复制，std::move 无效果（clang-tidy
+    // performance-move-const-arg）
+    auto stats = outcome.result.processing;
 
     auto endTime = std::chrono::steady_clock::now();
     auto duration =

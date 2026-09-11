@@ -266,7 +266,7 @@ auto formatStatisticsJson(const FqStatisticResult& result, const StatisticsWrite
     const auto metrics = computeMetrics(result, options);
     auto json = fixedStream();
     json << "{\n";
-    json << "  \"name\": \"" << jsonEscape(metrics.name) << "\",\n";
+    json << R"(  "name": ")" << jsonEscape(metrics.name) << R"(",)" << "\n";
     json << "  \"phred_qual\": " << metrics.phredQual << ",\n";
     json << "  \"read_num\": " << metrics.readCount << ",\n";
     json << "  \"duplicate_estimate\": " << metrics.duplicateEstimate << ",\n";

@@ -35,11 +35,13 @@ private:
     };
 
     static auto shardIndex() noexcept -> std::size_t {
-        thread_local const std::size_t index = [] {
+        // thread_local const 具静态存储期，按 StaticConstantCase 命名（k + CamelCase），
+        // 与同文件的 kShardCount 一致。
+        thread_local const std::size_t kIndex = [] {
             static std::atomic<std::size_t> next{0};
             return next.fetch_add(1, std::memory_order_relaxed) % kShardCount;
         }();
-        return index;
+        return kIndex;
     }
 
     Shard shards_[kShardCount];

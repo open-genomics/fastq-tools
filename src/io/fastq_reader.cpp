@@ -245,7 +245,7 @@ auto FastqReader::nextBatch(FastqBatch& batch, size_t maxRecords) -> bool {
                 // 按动态平均记录大小估算目标字节数：固定高估会系统性过读，
                 // 使每批读满缓冲上限后把大半数据存入 remainder、下批再整体拷回
                 const double want = static_cast<double>(maxRecords) * impl_->estimatedRecordBytes;
-                const double buffered = static_cast<double>(batch.buffer().size());
+                const auto buffered = static_cast<double>(batch.buffer().size());
                 // 目标至少比当前缓冲大一个 chunk：当估算过小（单条记录超过
                 // maxRecords × 平均记录长）且上次迭代未能解析出任何记录时，
                 // 若目标仍等于当前大小，内层读取循环条件恒为假、不读任何字节，

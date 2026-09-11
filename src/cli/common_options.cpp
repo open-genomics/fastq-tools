@@ -116,14 +116,22 @@ void validateReportTargets(const std::string& inputPath,
             continue;
         }
         if (fq::io::pathsAlias(inputPath, target)) {
-            throw fq::error::ConfigurationError("report target '" + target +
-                                                "' aliases the input FASTQ '" + inputPath +
-                                                "'; choose a different output path");
+            // 用 += 逐段追加而非链式 +：后者每步都构造临时 string
+            // （clang-tidy performance-inefficient-string-concatenation）
+            std::string msg = "report target '";
+            msg += target;
+            msg += "' aliases the input FASTQ '";
+            msg += inputPath;
+            msg += "'; choose a different output path";
+            throw fq::error::ConfigurationError(msg);
         }
         if (fq::io::pathsAlias(outputPath, target)) {
-            throw fq::error::ConfigurationError("report target '" + target +
-                                                "' aliases the FASTQ output '" + outputPath +
-                                                "'; the report would overwrite the result file");
+            std::string msg = "report target '";
+            msg += target;
+            msg += "' aliases the FASTQ output '";
+            msg += outputPath;
+            msg += "'; the report would overwrite the result file";
+            throw fq::error::ConfigurationError(msg);
         }
     }
     for (size_t i = 0; i < reportTargets.size(); ++i) {
