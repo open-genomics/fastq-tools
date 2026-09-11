@@ -17,3 +17,15 @@ race:tbb::detail::r1::stage_task::execute_filter
 # oneTBB malloc 内部：BootStrapBlocks::allocate 并发内存分配时的竞争
 # tbbmalloc 内部同步（自旋锁）对 TSan 不可见，触发于 concurrent_bounded_queue 扩容
 race:rml::internal::BootStrapBlocks::allocate
+
+# oneTBB 内部：task_arena 生命周期中的内存读写与 worker 线程之间的竞争
+# arena 槽位在 arena::allocate_arena 中 memset、在 ~task_arena 中释放，
+# 同时 worker 线程在 task_dispatcher 初始化与 wait-tree 注册表
+# （_Hashtable<wait_tree_vertex_interface*, …>）中访问同一块内存。
+# TBB 用自身的 do_once 与原子机制完成同步，对 TSan 不可见。
+# 实测 test_processing 与 test_integration_pipeline 的 7 份报告，两条竞争栈
+# 均完全位于 TBB 内部，项目帧只出现在调用方一侧。
+race:tbb::detail::r1::arena::allocate_arena
+race:tbb::detail::d1::task_arena::initialize
+race:tbb::detail::d1::task_arena::~task_arena
+race:tbb::detail::d1::wait_tree_vertex_interface
