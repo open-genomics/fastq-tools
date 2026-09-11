@@ -157,6 +157,13 @@ LCOV_ARGS=(
     --ignore-errors gcov
     --ignore-errors negative
     --ignore-errors version
+    # GCC 15 的 gcov 数据与 lcov 的行号/块记账不一致时，lcov 2.x 会把
+    # inconsistent 从警告升级为硬错误（apt 版 lcov 2.0 与 GCC 15 格式本就不兼容，
+    # 故 CI 从源码装 2.3.2，但 2.3.2 仍会报这一类）。典型报错：
+    #   mismatched end line for <symbol> at <file>: 34 -> 65
+    #   unexecuted block on non-branch line with non-zero hit count
+    # lcov 自身也建议以此绕过。该错误不影响覆盖率数值本身。
+    --ignore-errors inconsistent
 )
 
 if [[ "$VERBOSE" == "false" ]]; then
@@ -188,6 +195,7 @@ FILTER_ARGS=(
     --ignore-errors gcov
     --ignore-errors negative
     --ignore-errors version
+    --ignore-errors inconsistent
 )
 
 if [[ "$VERBOSE" == "false" ]]; then
