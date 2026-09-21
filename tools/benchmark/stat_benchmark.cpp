@@ -10,10 +10,8 @@ namespace fq::benchmark {
 namespace {
 
 void benchmarkProductionStatisticWorker(::benchmark::State& state) {
-    state.PauseTiming();
     const auto& batches = loadBenchmarkBatches();
     const auto inputBytes = BenchmarkDataset::fileSize();
-    state.ResumeTiming();
 
     fq::statistics::FqStatisticResult result;
     for (auto _ : state) {

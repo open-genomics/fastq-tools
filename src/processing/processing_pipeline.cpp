@@ -185,34 +185,48 @@ auto Pipeline::Impl::applyOperations(fq::io::FastqBatch& batch, ProcessingStatis
 
     size_t modifiedCount = 0;
 
-    for (size_t i = 0; i < totalInBatch; ++i) {
-        auto& read = records[i];
-
-        // 修改器自行报告是否改动，热点路径不再做修改前后全记录比较
-        bool modified = false;
-        for (const auto& mutator : mutators_) {
-            modified = mutator->process(read) || modified;
-        }
-
-        bool passed = !read.empty();
-        if (passed && hasPredicates) {
-            for (const auto& predicate : predicates_) {
-                if (!predicate->evaluate(read)) {
-                    passed = false;
-                    break;
-                }
+    if (mutators_.empty() && predicates_.empty()) {
+        // 无算子时仍保留空记录过滤语义，但跳过每条记录的虚调用与修改状态维护。
+        for (size_t i = 0; i < totalInBatch; ++i) {
+            auto& read = records[i];
+            if (read.empty()) {
+                continue;
             }
-        }
-
-        if (passed && modified) {
-            ++modifiedCount;
-        }
-
-        if (passed) {
             if (passedCount != i) {
                 records[passedCount] = read;
             }
-            passedCount++;
+            ++passedCount;
+        }
+    } else {
+        for (size_t i = 0; i < totalInBatch; ++i) {
+            auto& read = records[i];
+
+            // 修改器自行报告是否改动，热点路径不再做修改前后全记录比较
+            bool modified = false;
+            for (const auto& mutator : mutators_) {
+                modified = mutator->process(read) || modified;
+            }
+
+            bool passed = !read.empty();
+            if (passed && hasPredicates) {
+                for (const auto& predicate : predicates_) {
+                    if (!predicate->evaluate(read)) {
+                        passed = false;
+                        break;
+                    }
+                }
+            }
+
+            if (passed && modified) {
+                ++modifiedCount;
+            }
+
+            if (passed) {
+                if (passedCount != i) {
+                    records[passedCount] = read;
+                }
+                passedCount++;
+            }
         }
     }
 

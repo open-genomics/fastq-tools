@@ -40,11 +40,35 @@ python3 tools/benchmark/scripts/run_benchmarks.py \
 | `filter_benchmark.cpp` | filter 端到端 |
 | `stat_benchmark.cpp` | stat 计算性能 |
 | `pipeline_benchmark.cpp` | Sequential / oneTBB 同契约对照 |
+| `concurrency_benchmark.cpp` | 真实 Pipeline 的线程数与 batch 大小扫描 |
 | `object_pool_benchmark.cpp` | 对象池分配性能 |
 
 ## 历史 Backend 对照（仅归档）
 
 v4 benchmark 只运行 Sequential 与 oneTBB；Taskflow backend 已移除。旧的 Taskflow p50/p95/RSS 对照报告保留在 `docs/performance/benchmark-reports/backends/`，作为历史决策记录。
+
+## 并发扩展扫描
+
+固定 v4 基线之外，`benchmark_concurrency` 使用真实 `Pipeline` 测量四条探索路径：
+
+- 不配置 mutator/predicate 的 CPU-only 基线，用于验证空算子 fast path；
+- 组合过滤但不写出，用于观察并行处理本身的扩展性；
+- 组合过滤并写出 plain FASTQ，用于观察顺序提交阶段的影响；
+- `fq::statistics::Calculator`，用于观察生产统计命令的批处理与串行归约影响。
+
+每条路径扫描 1/2/4/8 线程和 1K/10K/50K records per batch：
+
+```bash
+cmake --build build/clang-release --target benchmark_concurrency
+./build/clang-release/tools/benchmark/benchmark_concurrency \
+  --benchmark_format=json \
+  --benchmark_out=/tmp/fastqtools-concurrency.json \
+  --benchmark_repetitions=5 \
+  --benchmark_min_time=0.001s
+```
+
+该矩阵是探索性测量，不与固定 v4 快照混合；重点观察线程数增加后的吞吐拐点、batch
+大小敏感性和峰值 RSS，而不是把单次结果当作跨机器绝对性能。
 
 2026-07-13 本机验证快照（16 X 3193.9 MHz，100K × 150bp，plain FASTQ，Clang 21 Release + libc++，每 case 7 次重复）：
 

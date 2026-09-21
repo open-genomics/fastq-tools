@@ -35,7 +35,7 @@ struct ResolvedRuntimeConfig {
     size_t zlibBufferBytes = 128 * 1024;          ///< zlib 内部缓冲区大小
     size_t batchCapacityBytes = 4 * 1024 * 1024;  ///< 批次缓冲区容量（字节）
     size_t batchSize = 10000;                     ///< 批次记录数（用于容量和预算）
-    size_t writerBufferBytes = 128 * 1024;        ///< 写入器缓冲区大小
+    size_t writerBufferBytes = 256 * 1024;        ///< 写入器缓冲区大小
     size_t memoryPerTokenBytes = 0;               ///< 每个并行 token 的保守内存预算
     /// @}
 

@@ -19,7 +19,7 @@ namespace {
 
 constexpr size_t kDefaultReadChunkBytes = 1 * 1024 * 1024;
 constexpr size_t kDefaultBatchCapacityBytes = 4 * 1024 * 1024;
-constexpr size_t kDefaultWriterBufferBytes = 128 * 1024;
+constexpr size_t kDefaultWriterBufferBytes = 256 * 1024;
 constexpr size_t kZlibBufferBytes = 128 * 1024;
 
 auto applyProfileDefaults(ResolvedRuntimeConfig& config, ProcessingProfile profile) -> void {

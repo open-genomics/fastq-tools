@@ -138,9 +138,11 @@ inline void setThroughputCounters(::benchmark::State& state,
     state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * readCount));
     state.SetBytesProcessed(static_cast<std::int64_t>(state.iterations() * inputBytes));
     state.counters["reads_per_s"] =
-        ::benchmark::Counter(static_cast<double>(readCount), ::benchmark::Counter::kIsRate);
+        ::benchmark::Counter(static_cast<double>(readCount),
+                             ::benchmark::Counter::kIsIterationInvariantRate);
     state.counters["mib_per_s"] = ::benchmark::Counter(
-        static_cast<double>(inputBytes) / (1024.0 * 1024.0), ::benchmark::Counter::kIsRate);
+        static_cast<double>(inputBytes) / (1024.0 * 1024.0),
+        ::benchmark::Counter::kIsIterationInvariantRate);
     state.counters["peak_memory_bytes"] = static_cast<double>(peakResidentBytes());
 }
 

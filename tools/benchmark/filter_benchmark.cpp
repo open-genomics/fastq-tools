@@ -39,12 +39,10 @@ void configurePipeline(PipelineLike& pipeline, FilterScenario scenario) {
 }
 
 void benchmarkFilter(::benchmark::State& state, FilterScenario scenario) {
-    state.PauseTiming();
     const auto inputPath = BenchmarkDataset::path();
     const auto inputBytes = BenchmarkDataset::fileSize();
     const auto outputPath = std::filesystem::temp_directory_path() /
         ("fastqtools-filter-" + std::to_string(static_cast<int>(scenario)) + ".fastq");
-    state.ResumeTiming();
 
     std::uint64_t passedReads = 0;
     std::uint64_t filteredReads = 0;
@@ -67,9 +65,7 @@ void benchmarkFilter(::benchmark::State& state, FilterScenario scenario) {
         ::benchmark::DoNotOptimize(passedReads);
     }
 
-    state.PauseTiming();
     removeBenchmarkOutput(outputPath);
-    state.ResumeTiming();
     setThroughputCounters(state, kBenchmarkReadCount, inputBytes);
     state.counters["passed_reads"] = static_cast<double>(passedReads);
     state.counters["filtered_reads"] = static_cast<double>(filteredReads);

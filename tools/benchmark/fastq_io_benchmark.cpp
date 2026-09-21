@@ -10,10 +10,8 @@ namespace fq::benchmark {
 namespace {
 
 void benchmarkReader(::benchmark::State& state) {
-    state.PauseTiming();
     const auto inputPath = BenchmarkDataset::path();
     const auto inputBytes = BenchmarkDataset::fileSize();
-    state.ResumeTiming();
 
     for (auto _ : state) {
         fq::io::FastqReader reader(inputPath.string());
@@ -29,11 +27,9 @@ void benchmarkReader(::benchmark::State& state) {
 }
 
 void benchmarkWriter(::benchmark::State& state, const WriterBenchmarkSpec& spec, bool batchApi) {
-    state.PauseTiming();
     const auto& batches = loadBenchmarkBatches();
     const auto inputBytes = BenchmarkDataset::fileSize();
     const auto outputPath = writerOutputPath(spec, batchApi ? "batch" : "single");
-    state.ResumeTiming();
 
     for (auto _ : state) {
         fq::io::FastqWriterOptions options;
@@ -58,9 +54,7 @@ void benchmarkWriter(::benchmark::State& state, const WriterBenchmarkSpec& spec,
         ::benchmark::DoNotOptimize(writtenBytes);
     }
 
-    state.PauseTiming();
     removeBenchmarkOutput(outputPath);
-    state.ResumeTiming();
     setThroughputCounters(state, kBenchmarkReadCount, inputBytes);
 }
 

@@ -109,6 +109,30 @@ TEST_F(FastqWriterTest, BatchWriteReportsCommittedUncompressedBytesThroughContra
     EXPECT_EQ(writer.write(batch), 19U);
 }
 
+TEST_F(FastqWriterTest, BatchWritePreservesRecordFormattingAndOrder) {
+    FastqBatch batch(32, 3);
+    batch.records().push_back(FastqRecord{"read1", {}, "ACGT", "IIII", {}});
+    batch.records().push_back(FastqRecord{"read2", "desc", "AAAA", "JJJJ", "+read2"});
+    batch.records().push_back(FastqRecord{"read3", {}, "TT", "HH", "+"});
+
+    FastqWriterOptions options;
+    options.outputBufferBytes = 32;
+    {
+        FastqWriter writer(tmpFile_, options);
+        EXPECT_EQ(writer.write(batch), 63U);
+        writer.finish();
+    }
+
+    std::ifstream in(tmpFile_);
+    ASSERT_TRUE(in.is_open());
+    const std::string content((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+    EXPECT_EQ(content,
+              "@read1\nACGT\n+\nIIII\n"
+              "@read2 desc\nAAAA\n+read2\nJJJJ\n"
+              "@read3\nTT\n+\nHH\n");
+}
+
 TEST_F(FastqWriterTest, PreservesCustomPlusLineWhenWriting) {
     {
         FastqWriter writer(tmpFile_);

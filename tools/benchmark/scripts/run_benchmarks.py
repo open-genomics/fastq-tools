@@ -32,7 +32,7 @@ def run_executable(
         "--benchmark_format=json",
         f"--benchmark_out={output_path}",
         f"--benchmark_repetitions={repetitions}",
-        "--benchmark_min_time=0.001",
+        "--benchmark_min_time=0.001s",
         "--benchmark_report_aggregates_only=false",
     ]
     if benchmark_filter:

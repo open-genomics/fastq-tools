@@ -21,6 +21,7 @@
 | `filter_benchmark.cpp` | Filter 命令端到端性能 |
 | `stat_benchmark.cpp` | Stat 命令统计计算性能 |
 | `pipeline_benchmark.cpp` | Sequential / oneTBB 公平对照 |
+| `concurrency_benchmark.cpp` | 真实 Pipeline 的线程数与 batch 大小扫描 |
 | `object_pool_benchmark.cpp` | ObjectPool 对象池分配性能 |
 
 ### 构建与运行
@@ -31,6 +32,11 @@ cmake --build build --target benchmarks
 
 # 运行单个基准测试
 ./build/tools/benchmark/benchmark_fastq_io --benchmark_format=json
+
+# 运行并发扩展矩阵（1/2/4/8 线程 × 1K/10K/50K batch）
+./build/tools/benchmark/benchmark_concurrency \
+  --benchmark_format=json \
+  --benchmark_out=/tmp/fastqtools-concurrency.json
 
 # 运行所有基准测试（1M×150 bp、5 次重复、JSON + median/CV 摘要）
 cmake --build build/clang-release --target run_benchmarks
@@ -64,3 +70,6 @@ cmake --build build/clang-release --target benchmark_full
 | `benchmark_full` | 完整测试（3 次重复，聚合结果） |
 | `benchmark_ci` | CI 模式（控制台 + JSON 双输出） |
 | `benchmark_backend_comparison` | 7 次重复的 backend p50/p95、吞吐与峰值 RSS 对照 |
+
+`benchmark_concurrency` 不属于默认 `run_benchmarks` 套件。它用于探索线程扩展性、
+batch 大小敏感性和空算子路径，结果应在固定机器、固定输入和固定构建配置下单独归档。

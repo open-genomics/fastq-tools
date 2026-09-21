@@ -382,6 +382,26 @@ TEST_F(PipelineIntegrationTest, PipelineRequiresResettingCustomReaderBeforeRerun
     EXPECT_THROW(static_cast<void>(pipeline.run()), std::invalid_argument);
 }
 
+TEST_F(PipelineIntegrationTest, PipelineWithoutOperationsStillFiltersEmptyCustomRecords) {
+    fq::io::FastqBatch batch(1024, 2);
+    batch.records().push_back(fq::io::FastqRecord{"read1", {}, "ACGT", "IIII", "+"});
+    batch.records().push_back(fq::io::FastqRecord{"empty", {}, {}, {}, "+"});
+
+    fq::processing::Pipeline pipeline;
+    fq::processing::ProcessingOptions options;
+    options.threadCount = 1;
+    options.batchSize = 2;
+    pipeline.setProcessingOptions(options);
+    pipeline.setReader(
+        std::make_unique<VectorReader>(std::vector<fq::io::FastqBatch>{std::move(batch)}));
+
+    const auto stats = pipeline.run();
+
+    EXPECT_EQ(stats.totalReads, 2);
+    EXPECT_EQ(stats.passedReads, 1);
+    EXPECT_EQ(stats.filteredReads, 1);
+}
+
 TEST_F(PipelineIntegrationTest, StatisticCalculatorRunsInHighThroughputMode) {
     const auto input = tempDir_.path() / "input.fastq";
     const auto output = tempDir_.path() / "stats.txt";

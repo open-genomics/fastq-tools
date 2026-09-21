@@ -66,6 +66,15 @@ if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/pipeline_benchmark.cpp")
     target_include_directories(benchmark_pipeline PRIVATE ${CMAKE_SOURCE_DIR}/src)
 endif()
 
+# 并发扩展基准测试：真实 Pipeline 的线程数/批大小扫描。
+# 这是探索性矩阵，不加入默认 run_benchmarks，避免改变固定 v4 基线的耗时和口径。
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/concurrency_benchmark.cpp")
+    add_benchmark(benchmark_concurrency
+        concurrency_benchmark.cpp
+    )
+    target_include_directories(benchmark_concurrency PRIVATE ${CMAKE_SOURCE_DIR}/src)
+endif()
+
 # ObjectPool 对象池基准测试
 if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/object_pool_benchmark.cpp")
     add_benchmark(benchmark_object_pool

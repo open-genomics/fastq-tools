@@ -374,8 +374,7 @@ struct FastqWriter::Impl {
         buffer.clear();
     }
 
-    /// 批量追加：先计算总大小，一次 resize，然后用 memcpy 拼接
-    void appendRecord(const FastqRecord& rec) {
+    static auto recordSize(const FastqRecord& rec) -> size_t {
         const std::string_view plusLine = rec.plus.empty() ? std::string_view("+") : rec.plus;
         size_t needed = 1 + rec.id.size() + 1 +  // @ + ID + \n
             rec.seq.size() + 1 +                 // Seq + \n
@@ -385,51 +384,92 @@ struct FastqWriter::Impl {
         if (!rec.comment.empty()) {
             needed += 1 + rec.comment.size();  // Space + Comment
         }
+        return needed;
+    }
 
-        // Flush if buffer full
-        if (buffer.size() + needed > buffer.capacity()) {
-            flush();
-
-            if (needed > buffer.capacity()) {
-                size_t newCap = std::max(buffer.capacity() * 2, needed + 4096);
-                buffer.reserve(newCap);
-            }
+    static void appendView(char*& dst, std::string_view value) {
+        if (!value.empty()) {
+            std::memcpy(dst, value.data(), value.size());
+            dst += value.size();
         }
+    }
 
-        // 一次 resize + memcpy 批量拼接，避免逐字符 push_back/insert 开销；
-        // 空 string_view 的 data() 可能为 nullptr，memcpy(nullptr, 0) 标准上是 UB，
-        // 统一经 appendView 判空后拷贝
-        const size_t oldSize = buffer.size();
-        buffer.resize(oldSize + needed);
-        char* dst = buffer.data() + oldSize;
-
-        const auto appendView = [&dst](std::string_view value) {
-            if (!value.empty()) {
-                std::memcpy(dst, value.data(), value.size());
-                dst += value.size();
-            }
-        };
+    static void appendRecordBytes(char*& dst, const FastqRecord& rec) {
+        const std::string_view plusLine = rec.plus.empty() ? std::string_view("+") : rec.plus;
 
         *dst++ = '@';
-        appendView(rec.id);
+        appendView(dst, rec.id);
 
         if (!rec.comment.empty()) {
             *dst++ = ' ';
-            appendView(rec.comment);
+            appendView(dst, rec.comment);
         }
         *dst++ = '\n';
 
-        appendView(rec.seq);
+        appendView(dst, rec.seq);
         *dst++ = '\n';
 
-        appendView(plusLine);
+        appendView(dst, plusLine);
         *dst++ = '\n';
 
-        appendView(rec.qual);
+        appendView(dst, rec.qual);
         *dst++ = '\n';
+    }
+
+    void ensureCapacity(size_t needed) {
+        if (needed <= buffer.capacity() - buffer.size()) {
+            return;
+        }
+
+        flush();
+        if (needed <= buffer.capacity()) {
+            return;
+        }
+
+        const size_t newCapacity = std::max(buffer.capacity() * 2, needed + 4096);
+        buffer.reserve(newCapacity);
+    }
+
+    void appendRecord(const FastqRecord& rec) {
+        const auto needed = recordSize(rec);
+        ensureCapacity(needed);
+
+        const auto oldSize = buffer.size();
+        buffer.resize(oldSize + needed);
+        auto* dst = buffer.data() + oldSize;
+        appendRecordBytes(dst, rec);
 
         // 记录确实进入缓冲区后才计数：flush 抛异常时不把未接受的字节算进提交量
         totalUncompressedBytes += needed;
+    }
+
+    void appendBatch(const FastqBatch& batch) {
+        auto first = batch.begin();
+        while (first != batch.end()) {
+            ensureCapacity(recordSize(*first));
+
+            const auto available = buffer.capacity() - buffer.size();
+            size_t totalSize = 0;
+            auto next = first;
+            while (next != batch.end()) {
+                const auto needed = recordSize(*next);
+                if (needed > available - totalSize) {
+                    break;
+                }
+                totalSize += needed;
+                ++next;
+            }
+
+            const auto oldSize = buffer.size();
+            buffer.resize(oldSize + totalSize);
+            auto* dst = buffer.data() + oldSize;
+            for (auto record = first; record != next; ++record) {
+                appendRecordBytes(dst, *record);
+            }
+
+            totalUncompressedBytes += totalSize;
+            first = next;
+        }
     }
 };
 
@@ -454,9 +494,7 @@ auto FastqWriter::write(const FastqBatch& batch) -> std::uint64_t {
         throw fq::error::ConfigurationError("FastqWriter cannot write after finish");
     }
     const auto before = totalUncompressedBytes();
-    for (const auto& rec : batch) {
-        impl_->appendRecord(rec);
-    }
+    impl_->appendBatch(batch);
     return totalUncompressedBytes() - before;
 }
 

@@ -21,7 +21,7 @@ TEST(ResolvedRuntimeConfigTest, DerivesMemoryBoundedLiveTokenCountFromProcessing
 
     EXPECT_EQ(config.readChunkBytes, 1ULL * 1024ULL * 1024ULL);
     EXPECT_EQ(config.batchCapacityBytes, 4ULL * 1024ULL * 1024ULL);
-    EXPECT_EQ(config.writerBufferBytes, 128ULL * 1024ULL);
+    EXPECT_EQ(config.writerBufferBytes, 256ULL * 1024ULL);
     EXPECT_GE(config.maxLiveTokens, 1U);
     EXPECT_EQ(config.threadCount, 4U);
     EXPECT_EQ(config.executionMode, ExecutionMode::Parallel);
