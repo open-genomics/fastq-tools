@@ -57,8 +57,8 @@
 见 [`../benchmark.md`](../benchmark.md) 的"基准测试工具"章节。简述：
 
 ```bash
-# 构建基准目标
-cmake --build build --target benchmarks
+# 构建基准目标（需 -DBUILD_BENCHMARKS=ON 配置的构建目录）
+cmake --build build/clang-release --target benchmarks
 
 # 运行全部生产基准并保存 raw JSON + median/CV
 cmake --build build/clang-release --target run_benchmarks

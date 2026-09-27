@@ -107,6 +107,7 @@ git clone https://github.com/open-genomics/fastq-tools.git
 cd fastq-tools
 ./scripts/core/build
 ./build/clang-release/FastQTools --help
+```
 
 ### CPU 架构基线
 
@@ -126,7 +127,6 @@ x86-64 或 ARM CPU 上运行。如需针对特定 CPU 优化：
 ```
 
 > **注意**：项目不实现运行时 SIMD dispatch。选择的基线在编译时固定。
-```
 
 示例输入不随仓库附带，先用 `scripts/datagen/gen_fastq.py` 生成示例数据：`python3 scripts/datagen/gen_fastq.py -o sample.fastq && gzip -kf sample.fastq`。
 
@@ -179,7 +179,7 @@ x86-64 或 ARM CPU 上运行。如需针对特定 CPU 优化：
 
 ## 测试与质量保证
 
-CI（GitHub Actions，push/PR 均触发，sanitizer 矩阵随 PR 与主分支运行）覆盖：
+CI（GitHub Actions）采用轻量自动、重任务手动的触发策略：push/PR 自动运行秒级的格式检查与决策笔记校验；下列重任务由 `workflow_dispatch` 手动触发（等价本地命令见 `ci.yml` 头部注释）：
 
 - 静态检查：clang-format、clang-tidy、cppcheck
 - 多编译器：GCC + Clang，Release 模式

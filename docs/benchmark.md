@@ -23,12 +23,17 @@
 
 ## 基准测试工具
 
+benchmark 目标要求构建目录以 `-DBUILD_BENCHMARKS=ON` 配置（benchmark、nlohmann_json、GoogleTest 由 Conan 按需加入）：
+
 ```bash
-# 构建并运行全部生产基准，保存 raw JSON + median/CV
-cmake --build build/clang-release --target benchmarks
+# 构建并运行全部生产基准，raw JSON + median/CV 输出到
+# docs/performance/benchmark-reports/results/
+cmake --build build/clang-release --target run_benchmarks
+
+# 自定义输出目录时直接调用 runner
 python3 tools/benchmark/scripts/run_benchmarks.py \
   --build-dir build/clang-release \
-  --output-dir docs/performance/benchmark-reports/v4-baseline/2026-07-17 \
+  --output-dir docs/performance/benchmark-reports/v4-baseline/<YYYY-MM-DD> \
   --repetitions 5
 ```
 
@@ -45,7 +50,22 @@ python3 tools/benchmark/scripts/run_benchmarks.py \
 
 ## 历史 Backend 对照（仅归档）
 
-v4 benchmark 只运行 Sequential 与 oneTBB；Taskflow backend 已移除。旧的 Taskflow p50/p95/RSS 对照报告保留在 `docs/performance/benchmark-reports/backends/`，作为历史决策记录。
+v4 benchmark 只运行 Sequential 与 oneTBB；Taskflow backend 已移除，决策记录见 [移除 Taskflow 的笔记](../.agents/notes/implemented/simplification/2026-07-17-remove-taskflow-backend.md)。2026-07-13 原始快照（16 X 3193.9 MHz，100K × 150bp，plain FASTQ，Clang 21 Release + libc++，每 case 7 次重复）的完整 p50/p95/RSS 数据保留在 [`performance/benchmark-reports/backends/summary.md`](./performance/benchmark-reports/backends/summary.md)。
+
+逐线程数对照（同工作负载同线程数取吞吐更高者为胜）：
+
+| 工作负载 | oneTBB 最佳 | Taskflow 最佳 | 胜者 | 差值 |
+| --- | --- | --- | --- | --- |
+| CPU-only 2T | 1012.41 MiB/s | 835.00 MiB/s | oneTBB | +21% |
+| CPU-only 4T | 1389.51 MiB/s | 1368.42 MiB/s | oneTBB | +1.5% |
+| CPU-only 8T | 1186.69 MiB/s | 1267.43 MiB/s | Taskflow | +6.8% |
+| ReadWrite 2T | 420.78 MiB/s | 385.32 MiB/s | oneTBB | +9.2% |
+| ReadWrite 4T | 524.51 MiB/s | 783.84 MiB/s | Taskflow | +49.4% |
+| ReadWrite 8T | 393.34 MiB/s | 383.36 MiB/s | oneTBB | +2.6% |
+
+迁移门槛为“至少两个 CPU 密集负载吞吐提升 ≥10%、RSS 增长 ≤10%”。实测中 Taskflow 在 CPU-only 8T（+6.8%，未达 10%）和 ReadWrite 4T（+49.4%，达标且 RSS 更低 69 vs 76.7 MiB）两项胜出，但严格按门槛只有 ReadWrite 4T 一项满足 ≥10%，未达“至少两项”要求，因此 oneTBB 保持默认 backend。
+
+值得注意的是 Taskflow 在 ReadWrite 4T 的大幅领先（+49.4%）与 8T 的回落表明其调度在特定并发度下有优势，但整体矩阵未稳定胜出。该快照只用于验证选型，正式结论仍应在目标机器和真实数据集上复现。
 
 ## 并发扩展扫描
 
@@ -70,40 +90,6 @@ cmake --build build/clang-release --target benchmark_concurrency
 该矩阵是探索性测量，不与固定 v4 快照混合；重点观察线程数增加后的吞吐拐点、batch
 大小敏感性和峰值 RSS，而不是把单次结果当作跨机器绝对性能。
 
-2026-07-13 本机验证快照（16 X 3193.9 MHz，100K × 150bp，plain FASTQ，Clang 21 Release + libc++，每 case 7 次重复）：
-
-| Benchmark | p50 (ms) | p95 (ms) | 中位吞吐 (MiB/s) | 峰值 RSS (MiB) |
-| --- | ---: | ---: | ---: | ---: |
-| SequentialCpu/1T | 55.94 | 65.97 | 538.50 | 34.7 |
-| SequentialReadWrite/1T | 140.05 | 153.66 | 215.10 | 34.6 |
-| OneTbbCpu/2T | 29.76 | 40.30 | 1012.41 | 54.7 |
-| OneTbbCpu/4T | 21.68 | 30.48 | 1389.51 | 53.2 |
-| OneTbbCpu/8T | 25.39 | 25.89 | 1186.69 | 76.3 |
-| OneTbbReadWrite/2T | 71.59 | 138.14 | 420.78 | 60.7 |
-| OneTbbReadWrite/4T | 57.43 | 147.71 | 524.51 | 76.7 |
-| OneTbbReadWrite/8T | 76.59 | 163.39 | 393.34 | 106.7 |
-| TaskflowCpu/2T | 36.08 | 43.02 | 835.00 | 44.6 |
-| TaskflowCpu/4T | 22.01 | 24.04 | 1368.42 | 53.9 |
-| TaskflowCpu/8T | 23.77 | 25.69 | 1267.43 | 63.0 |
-| TaskflowReadWrite/2T | 78.18 | 139.21 | 385.32 | 49.6 |
-| TaskflowReadWrite/4T | 38.43 | 53.58 | 783.84 | 69.0 |
-| TaskflowReadWrite/8T | 78.58 | 173.09 | 383.36 | 104.0 |
-
-逐线程数对照（同工作负载同线程数取吞吐更高者为胜）：
-
-| 工作负载 | oneTBB 最佳 | Taskflow 最佳 | 胜者 | 差值 |
-| --- | --- | --- | --- | --- |
-| CPU-only 2T | 1012.41 MiB/s | 835.00 MiB/s | oneTBB | +21% |
-| CPU-only 4T | 1389.51 MiB/s | 1368.42 MiB/s | oneTBB | +1.5% |
-| CPU-only 8T | 1186.69 MiB/s | 1267.43 MiB/s | Taskflow | +6.8% |
-| ReadWrite 2T | 420.78 MiB/s | 385.32 MiB/s | oneTBB | +9.2% |
-| ReadWrite 4T | 524.51 MiB/s | 783.84 MiB/s | Taskflow | +49.4% |
-| ReadWrite 8T | 393.34 MiB/s | 383.36 MiB/s | oneTBB | +2.6% |
-
-迁移门槛为“至少两个 CPU 密集负载吞吐提升 ≥10%、RSS 增长 ≤10%”。实测中 Taskflow 在 CPU-only 8T（+6.8%，未达 10%）和 ReadWrite 4T（+49.4%，达标且 RSS 更低 69 vs 76.7 MiB）两项胜出，但严格按门槛只有 ReadWrite 4T 一项满足 ≥10%，未达“至少两项”要求，因此 oneTBB 保持默认 backend。
-
-值得注意的是 Taskflow 在 ReadWrite 4T 的大幅领先（+49.4%）与 8T 的回落表明其调度在特定并发度下有优势，但整体矩阵未稳定胜出。该快照只用于验证选型，正式结论仍应在目标机器和真实数据集上复现。
-
 ## 与同类工具对比
 
 本表不内置 fastp/seqkit 的直接同环境数字，因为对比结果高度依赖 CPU、磁盘、压缩级别、参数与数据集，写死容易误导。下面给出**量级定位**与**可复现方法**，供你在自己的硬件上补一行。
@@ -117,11 +103,11 @@ cmake --build build/clang-release --target benchmark_concurrency
 **如何在本仓库跑一次对比**：
 
 ```bash
-# 1. 构建 FastQTools 基准
-cmake --build build --target benchmarks
+# 1. 构建 FastQTools 基准（需 -DBUILD_BENCHMARKS=ON 配置的构建目录）
+cmake --build build/clang-release --target benchmarks
 
 # 2. 跑 FastQTools 基准
-./build/tools/benchmark/benchmark_fastq_io --benchmark_format=json
+./build/clang-release/tools/benchmark/benchmark_fastq_io --benchmark_format=json
 
 # 3. 在同一台机器、同一份数据上跑 fastp / seqkit
 #    例如：fastp -i sample.fastq.gz -o /dev/null --thread 8

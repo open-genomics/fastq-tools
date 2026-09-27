@@ -19,6 +19,8 @@
 
 全局选项（`main.cpp`）：`--verbose`/`-v`、`--quiet`/`-q`、`--log-level=<level>`。
 
+`-` 只接受未压缩流。gzip 输入请先 `gzip -dc` / `zcat`；gzip 输出请再管道给 `gzip`。
+
 ## stat — 统计
 
 ```bash
@@ -34,8 +36,6 @@ FastQTools stat -i sample.fastq.gz -o sample.stats.txt
 | `--json` | 可选 JSON 报告路径（与 TSV 同一指标集；`-` 写 stdout） | 关 |
 
 输出指标（TSV 摘要行）：文件名、质量编码、读段数、重复估计（`#DuplicateEstimate` 与 `#DuplicateEstimateRate`）、最大读长、总碱基数、Q20/Q30、碱基组成（A/C/G/T/N）与 GC 含量。摘要之后是逐位置明细表：`#Pos`、A/C/G/T/N 计数、`AvgQual`、`ErrRate`。`--json` 写出同一指标集的 JSON；不能与 `-o -` 同时指向 stdout。
-
-`-` 只接受未压缩流。gzip 输入请先 `gzip -dc` / `zcat`；gzip 输出请再管道给 `gzip`。
 
 ## filter — 过滤与修剪
 
