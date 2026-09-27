@@ -130,3 +130,7 @@ docs/performance/benchmark-reports/**/stat-massif.txt
 
 # benchmark-io 本机数据缓存（脚本按需重新生成）
 /test_input.fq.gz
+
+# 决策笔记看板（scripts/core/notes board 按需重新生成）
+/board.html
+/demo.html

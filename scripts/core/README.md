@@ -150,6 +150,23 @@
 
 ---
 
+### 📝 notes
+**决策笔记工具** - `.agents/notes/` 决策记录的校验与运维（write-notes-like-deepseek skill）
+
+```bash
+./scripts/core/notes verify             # 校验结构 + 格式 + 归档封印（默认命令）
+./scripts/core/notes archive <path>     # 归档一篇笔记
+./scripts/core/notes board              # 生成 board.html 决策看板
+./scripts/core/notes --help             # 全部子命令
+```
+
+**特点**:
+- lifecycle/class 目录即分类，脚本强制格式门禁（头块、必备节、备选方案）
+- 底层为 skill 目录里的独立 tsx 脚本，tsx 版本默认钉住（`TSX_PKG` 可覆盖）
+- 已接入 CI 自动档（push/PR 秒级检查）
+
+---
+
 ## 日常工作流
 
 ### 新功能开发

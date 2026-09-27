@@ -128,6 +128,22 @@ jobs:
       - name: Run format check
         run: ./scripts/core/lint format-check
 
+  verify-notes:
+    name: Verify agent notes
+    runs-on: ubuntu-latest
+
+    steps:
+      # 全量拉取：归档封印校验需解析变更前基线 ref（PR base.sha / push before）
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Verify agent notes
+        env:
+          AGENT_NOTE_ARCHIVE_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD' }}
+        run: ./scripts/core/notes verify
+
   static-analysis:
     name: Static Analysis
     runs-on: ubuntu-latest

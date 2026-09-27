@@ -1,0 +1,124 @@
+#!/bin/bash
+# scripts/core/notes
+#
+# FastQTools 决策笔记工具 - write-notes-like-deepseek skill 的校验与运维入口
+#
+# 使用示例:
+#   ./scripts/core/notes verify              # 校验笔记树结构 + 格式 + 归档封印
+#   ./scripts/core/notes archive <path>      # 归档一篇笔记（可选 --superseded-by <新笔记>）
+#   ./scripts/core/notes board               # 生成 board.html 决策看板
+#   ./scripts/core/notes anchors             # 代码内 // Note: 锚点软体检（不影响退出码）
+
+set -euo pipefail
+
+# 加载公共函数库
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../lib/common.sh"
+# shellcheck disable=SC1091
+
+# =============================================================================
+# 配置
+# =============================================================================
+
+REPO_ROOT="$(get_project_root)"
+SKILL_DIR="${REPO_ROOT}/.agents/skills/write-notes-like-deepseek"
+SKILL_SCRIPTS="${SKILL_DIR}/scripts"
+
+# tsx 版本默认钉住（对齐 toolchain.env 的钉版哲学），可用 TSX_PKG 覆盖
+TSX_PKG="${TSX_PKG:-tsx@4.23.15}"
+
+COMMAND="${1:-verify}"
+[[ $# -gt 0 ]] && shift
+
+# =============================================================================
+# 前置检查
+# =============================================================================
+
+if [[ ! -d "${SKILL_SCRIPTS}" ]]; then
+    log_error "未找到 skill 脚本目录: ${SKILL_SCRIPTS}"
+    log_error "请先安装 skill: npx skills add czm15053/write-notes-like-deepseek"
+    exit 1
+fi
+
+run_tsx() {
+    local script="$1"
+    shift
+    (cd "${REPO_ROOT}" && npx --yes "${TSX_PKG}" "${SKILL_SCRIPTS}/${script}" "$@")
+}
+
+# =============================================================================
+# 子命令
+# =============================================================================
+
+show_help() {
+    cat <<'EOF'
+用法: ./scripts/core/notes <命令> [参数]
+
+决策笔记（.agents/notes/）的校验与运维工具，底层为
+write-notes-like-deepseek skill 的独立 tsx 脚本。
+
+命令:
+  verify        串跑 tree + format + archived 全部校验（默认）
+  tree          校验目录结构、分类、文件名、笔记间相对链接
+  format        校验头块、状态、必备节、备选方案
+  archived      校验归档封印（manifest 哈希、只增不改）
+  archive       归档一篇笔记: archive <path> [--superseded-by <新笔记>]
+  anchors       扫描源码 // Note: 锚点并做双向软体检（退出码恒 0）
+  board         生成轻量看板 board.html（可传输出路径，默认仓库根）
+  bundle        打包自包含看板 demo.html（内嵌全量笔记数据）
+  help          显示本帮助
+
+环境变量:
+  TSX_PKG        tsx 包规格（默认 tsx@4.23.15）
+  AGENT_NOTE_ROOT 覆盖笔记目录（默认 <仓库根>/.agents/notes）
+
+示例:
+  ./scripts/core/notes verify
+  ./scripts/core/notes archive .agents/notes/implemented/feature/2026-01-01-x.md
+  ./scripts/core/notes board docs/notes-board.html
+EOF
+}
+
+case "${COMMAND}" in
+    verify)
+        log_section "校验决策笔记树: ${REPO_ROOT}/.agents/notes"
+        run_tsx verify-agent-note-tree.ts
+        run_tsx verify-agent-note-format.ts
+        run_tsx verify-archived-agent-notes.ts
+        log_success "决策笔记校验全部通过"
+        ;;
+    tree)
+        run_tsx verify-agent-note-tree.ts
+        ;;
+    format)
+        run_tsx verify-agent-note-format.ts
+        ;;
+    archived)
+        run_tsx verify-archived-agent-notes.ts
+        ;;
+    archive)
+        if [[ $# -lt 1 ]]; then
+            log_error "archive 需要笔记路径: ./scripts/core/notes archive <path> [--superseded-by <新笔记>]"
+            exit 2
+        fi
+        run_tsx archive-agent-note.ts "$@"
+        ;;
+    anchors)
+        run_tsx check-note-anchors.ts "$@" || true
+        ;;
+    board)
+        run_tsx build-board.ts --init "${1:-board.html}" "FastQTools 工程决策看板"
+        ;;
+    bundle)
+        run_tsx build-board.ts --bundle .agents/notes "${1:-demo.html}" "FastQTools 工程决策看板"
+        ;;
+    help|--help|-h)
+        show_help
+        ;;
+    *)
+        log_error "未知命令: ${COMMAND}"
+        echo ""
+        show_help
+        exit 2
+        ;;
+esac

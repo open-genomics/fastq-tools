@@ -110,6 +110,17 @@
 
 命名：测试文件 `test_<module>.cpp`，测试类 `<Module>Test`，用例 `<Object>_<Scenario>_<Expected>`。
 
+## 决策笔记
+
+`.agents/notes/` 记录「为什么这样改、放弃了什么」——代码和测试说不出来的意图、边界、取舍。方法来自 `.agents/skills/write-notes-like-deepseek`（细节以 SKILL.md 为准）。
+
+- **路径即分类**：`{lifecycle}/{class}/yyyy-mm-dd-topic.md`；lifecycle = `proposed`/`implemented`/`rejected`/`archived`，class = `feature`/`bug-fix`/`simplification`/`architecture`/`process`/`testing`。
+- **何时写**：改了行为、架构、跨文件契约、流程与工具链、测试策略、落盘/配置格式，或否掉了一个方案——必写。纯机械改动（格式化、重命名、补丁升级、单模块显式修复）免写。
+- **动手前先查**：`rg --hidden --glob '!.agents/notes/archived/**' '<关键词>' .agents/notes/`，避免重走被否路线（如 spdlog、libdeflate、Taskflow、std::expected、CLI 引入 nlohmann_json、全能 QC 方向均已有否决/移除记录）。
+- **就地同步优先**：路径/签名/默认值变了，原地更新持有该决定的老笔记；决定翻转才开新篇并互链。
+- **分工**：`issues/` 记问题复盘（现象/根因/处理），`openspec/` 管高风险变更 spec，`docs/architecture.md` 是架构叙事；`.agents/notes/` 记决策本身与被否方案。
+- **校验**：`./scripts/core/notes verify`（结构+格式+归档封印），已接入 CI 自动档。
+
 ## Agent 约束
 
 - 单人项目，默认在当前分支直接改动。
