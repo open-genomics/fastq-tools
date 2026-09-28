@@ -15,14 +15,13 @@ tools/
 │       ├── badge_generator.py       # shields.io 徽章生成
 │       ├── gen_benchmark_data.py    # 基准测试数据生成
 │       └── run_baseline.sh          # 端到端基线测试
-├── data/                   # 测试数据（样本不入库，按需生成）
-│   ├── README.md           # 数据生成说明
-│   └── gen_fastq.py        # 合成 FASTQ 数据生成器
 └── fuzz/                   # 模糊测试（LibFuzzer）
     ├── CMakeLists.txt      # CMake 构建配置
     ├── *_fuzzer.cpp         # Fuzzer 源码
     └── corpus/             # 种子文件
 ```
+
+> 合成 FASTQ 数据生成器在 `scripts/datagen/gen_fastq.py`（本目录没有 data/ 子目录）。
 
 ## 快速使用
 
@@ -62,5 +61,5 @@ python3 tools/benchmark/scripts/gen_benchmark_data.py --generate-dataset
 ## 与项目的集成
 
 - **CMake**: 根 `CMakeLists.txt` 通过 `BUILD_BENCHMARKS` 和 `ENABLE_FUZZING` 选项控制构建
-- **CI**: `.github/workflows/benchmark.yml` 自动运行基准测试和回归检测
+- **CI**: CI 不运行基准（重任务仅手动触发 fuzz/coverage/sanitizer 等套件，见 `ci.yml` 头部注释）；基准与回归检测按上文命令在本地运行
 - **脚本**: `scripts/dev/performance/benchmark` 提供统一的命令行接口
