@@ -1,7 +1,8 @@
 <h1 align="center">FastQTools</h1>
 
 <p align="center">
-  <b>C++23 FASTQ 质控工具，内置并行流水线内核。</b>
+  <b>C++23 FASTQ 质控工具，内置并行流水线内核。</b><br>
+  <i>High-throughput FASTQ quality control with a built-in parallel pipeline kernel.</i>
 </p>
 
 <p align="center">
@@ -221,3 +222,16 @@ CI（GitHub Actions）采用轻量自动、重任务手动的触发策略：push
 ## 作者
 
 **shijiashuai** — [GitHub](https://github.com/holtwood)
+
+---
+
+## 相关项目
+
+- [fq-compressor](https://github.com/open-genomics/fq-compressor) — FASTQ 压缩归档（C++23，同属 C++ 系统线）
+- [minibwa-rust](https://github.com/open-genomics/minibwa-rust) — 短读比对器（Rust 线）
+
+<div align="center">
+
+本仓库属于 <a href="https://github.com/open-genomics"><b>Open Genomics</b></a> · 高性能生物信息学系统软件与中文知识库
+
+</div>
