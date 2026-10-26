@@ -21,6 +21,7 @@ add_fq_test(test_memory     "unit" 60  memory/test_object_pool.cpp)
 # benchmark 结果存储测试：直接把 src/benchmark 两个源文件编进测试目标，
 # 保持 BUILD_BENCHMARKS=OFF（默认）时基准工具不参与构建，同时单测始终运行
 add_fq_test(test_benchmark  "unit" 60  benchmark/test_result_storage.cpp
+    benchmark/test_data_collector.cpp
     ${CMAKE_SOURCE_DIR}/src/benchmark/result_storage.cpp
     ${CMAKE_SOURCE_DIR}/src/benchmark/data_collector.cpp)
 target_link_libraries(test_benchmark PRIVATE nlohmann_json::nlohmann_json)

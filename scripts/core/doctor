@@ -22,6 +22,9 @@ source "${SCRIPT_DIR}/../lib/common.sh"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/toolchain.env"
 
+# 与 build 保持一致：pip --user 安装的 conan 可能不在 PATH
+ensure_pip_user_bin_in_path
+
 VERBOSE=false
 for arg in "$@"; do
     case "$arg" in
@@ -178,7 +181,10 @@ else
     record pass conan "版本 ${version}（CI 锁定 ${EXPECTED_CONAN_CI}，包缓存可能无法跨小版本复用）"
 fi
 
-# --- 编译器（存在性 + C++23 下限；与 CI 对齐仅作建议） ---
+# --- 编译器（存在性 + C++23 下限；gcc/clang 二选一即可） ---
+# CMake 的门禁只作用于实际使用的编译器，因此单个编译器低于下限不是失败：
+# 典型场景是 ARM 服务器用 Clang 21 + 发行版自带的旧 GCC。
+usable_compiler=false
 for compiler in gcc clang; do
     version=""
     if command -v "$compiler" >/dev/null 2>&1; then version="$(get_version "$compiler")"; fi
@@ -189,15 +195,34 @@ for compiler in gcc clang; do
     major="$(major_of "$version")"
     local_min="EXPECTED_$(echo "$compiler" | tr '[:lower:]' '[:upper:]')_MIN"
     if (( major < ${!local_min} )); then
-        record fail "$compiler" "版本 ${version}（C++23 完整支持需 ≥${!local_min}）" \
+        record warn "$compiler" "版本 ${version}（低于 ${!local_min}；另一编译器满足下限即可）" \
             "升级编译器；CI 分别为 GCC 15 / LLVM ${EXPECTED_LLVM_VERSION}"
-    elif [[ "$major" != "${EXPECTED_LLVM_VERSION}" && "$compiler" == "clang" ]]; then
-        record warn "$compiler" "版本 ${version}（CI 为 ${EXPECTED_LLVM_VERSION}.x；构建可行，但二进制与 CI 不逐位可比）" \
-            "sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${EXPECTED_LLVM_VERSION} 100"
     else
-        record pass "$compiler" "版本 ${version}"
+        usable_compiler=true
+        if [[ "$major" != "${EXPECTED_LLVM_VERSION}" && "$compiler" == "clang" ]]; then
+            record warn "$compiler" "版本 ${version}（CI 为 ${EXPECTED_LLVM_VERSION}.x；构建可行，但二进制与 CI 不逐位可比）" \
+                "sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${EXPECTED_LLVM_VERSION} 100"
+        else
+            record pass "$compiler" "版本 ${version}"
+        fi
     fi
 done
+if [[ "$usable_compiler" != "true" ]]; then
+    record fail "compiler" \
+        "没有满足下限的编译器（需 GCC ≥${EXPECTED_GCC_MIN} 或 Clang ≥${EXPECTED_CLANG_MIN}）" \
+        "安装 Clang ${EXPECTED_LLVM_VERSION} 或 GCC ${EXPECTED_GCC_MIN}+"
+fi
+
+# clang 与 clang++ 是独立的 alternatives 组，可能一个已切换、另一个仍是旧版
+if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
+    clang_only_version="$(get_version clang)"
+    clangxx_version="$(get_version clang++)"
+    if [[ -n "$clang_only_version" && -n "$clangxx_version" &&
+          "$(major_of "$clang_only_version")" != "$(major_of "$clangxx_version")" ]]; then
+        record warn "clang++" "版本 ${clangxx_version} 与 clang ${clang_only_version} 不一致" \
+            "运行 ./scripts/core/install-deps 重新钉住 alternatives"
+    fi
+fi
 
 # --- 测试与静态分析 ---
 version=""

@@ -17,6 +17,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 
+# pip --user 安装的 conan 可能不在 PATH，先探测用户脚本目录
+ensure_pip_user_bin_in_path
+
 # =============================================================================
 # 默认配置
 # =============================================================================
@@ -258,6 +261,20 @@ case "$PRESET" in
         ;;
 esac
 
+# clang-* preset 无条件加 -stdlib=libc++；ARM 的 Conan profile 统一用
+# libstdc++，混用会在链接期出现 ABI 冲突。提前给出明确错误，而不是让
+# 用户看到一长串 CMake/链接失败。
+if [[ -n "$PRESET" && "$(detect_os)" == "linux" &&
+    "$(uname -m 2>/dev/null)" =~ ^(aarch64|arm64)$ ]]; then
+    case "$PRESET" in
+        clang-*)
+            log_error "ARM64 上不支持 preset '${PRESET}'（强制 -stdlib=libc++）"
+            log_info "请去掉 --preset，使用默认构建路径；或改用 --compiler gcc"
+            exit 1
+            ;;
+    esac
+fi
+
 # =============================================================================
 # 环境检查
 # =============================================================================
@@ -304,6 +321,7 @@ log_info "项目根目录: ${PROJECT_ROOT}"
 log_info "构建目录: ${BUILD_DIR}"
 [[ -n "$ACTIVE_PRESET" ]] && log_info "CMake preset: ${ACTIVE_PRESET}"
 log_info "编译器: ${COMPILER}"
+log_info "主机架构: $(uname -m 2>/dev/null || echo unknown)"
 log_info "构建类型: ${BUILD_TYPE}"
 [[ -n "$SANITIZER" ]] && log_info "Sanitizer: ${SANITIZER}"
 [[ "$COVERAGE" == "true" ]] && log_info "覆盖率: 已启用"
@@ -428,16 +446,44 @@ if command -v conan &>/dev/null; then
     CONANFILE_PATH="build-config/dependencies/conanfile.py"
     LOCKFILE_PATH="conan.lock"
     CONANFILE_HASH_FILE="${BUILD_DIR}/conanfile.sha256"
-    # lockfile 一并纳入变更检测：仅更新 conan.lock（依赖升级）也能触发重装。
-    # --lockfile-out 回写经实测字节稳定（内容不变则文件不变），不会造成重装循环；
-    # lockfile 不存在时 cat 自动忽略该参数，退化为仅检测 conanfile.py。
-    CURRENT_CONANFILE_HASH=$(cat "${CONANFILE_PATH}" "${LOCKFILE_PATH}" 2>/dev/null | sha256sum | cut -d' ' -f1)
+
+    # 先解析本次要用的 profile，并纳入变更检测：切换 profile 或修改
+    # profile 内容都要重新生成 toolchain，不能沿用旧依赖。
+    CONAN_PROFILE="${CONAN_PROFILE_OVERRIDE}"
+    if [[ -n "${CONAN_PROFILE}" ]]; then
+        if [[ ! -f "${CONAN_PROFILE}" ]]; then
+            log_error "指定的 Conan profile 不存在: ${CONAN_PROFILE}"
+            exit 1
+        fi
+    else
+        # 按主机架构选择仓库内的 host profile；ARM64 使用 armv8 语义的
+        # profile-*-arm64，避免误用写死 arch=x86_64 的 x86 profile。
+        CONAN_PROFILE="$(get_conan_profile "${COMPILER}" 2>/dev/null || true)"
+        if [[ -z "${CONAN_PROFILE}" ]]; then
+            log_warning "当前平台 $(detect_os)/$(uname -m 2>/dev/null || echo unknown) 没有内置 Conan profile，将使用 Conan 默认 profile"
+        elif [[ ! -f "${CONAN_PROFILE}" ]]; then
+            log_warning "未找到 Conan profile: ${CONAN_PROFILE}，将使用 Conan 默认 profile"
+            CONAN_PROFILE=""
+        else
+            log_info "Conan host profile: ${CONAN_PROFILE}"
+        fi
+    fi
+
+    CONAN_HASH_INPUTS=("${CONANFILE_PATH}")
+    # --lockfile-out 回写经实测字节稳定（内容不变则文件不变），不会造成重装循环。
+    if [[ -f "${LOCKFILE_PATH}" ]]; then
+        CONAN_HASH_INPUTS+=("${LOCKFILE_PATH}")
+    fi
+    if [[ -n "${CONAN_PROFILE}" && -f "${CONAN_PROFILE}" ]]; then
+        CONAN_HASH_INPUTS+=("${CONAN_PROFILE}")
+    fi
+    CURRENT_CONANFILE_HASH=$(cat "${CONAN_HASH_INPUTS[@]}" | sha256sum | cut -d' ' -f1)
 
     NEED_CONAN_INSTALL=false
     if [[ ! -f "${TOOLCHAIN_PATH}" ]]; then
         NEED_CONAN_INSTALL=true
     elif [[ ! -f "${CONANFILE_HASH_FILE}" ]] || [[ "$(cat "${CONANFILE_HASH_FILE}" 2>/dev/null)" != "${CURRENT_CONANFILE_HASH}" ]]; then
-        log_info "检测到 conanfile.py/conan.lock 发生变化，将重新生成 Conan 依赖"
+        log_info "检测到 conanfile.py/conan.lock/profile 发生变化，将重新生成 Conan 依赖"
         NEED_CONAN_INSTALL=true
     fi
 
@@ -449,24 +495,17 @@ if command -v conan &>/dev/null; then
             CONAN_BUILD_TYPE="Debug"
         fi
 
-        CONAN_PROFILE="${CONAN_PROFILE_OVERRIDE}"
-        if [[ -n "${CONAN_PROFILE}" ]]; then
-            if [[ ! -f "${CONAN_PROFILE}" ]]; then
-                log_error "指定的 Conan profile 不存在: ${CONAN_PROFILE}"
-                exit 1
-            fi
-        else
-            CONAN_ARCH="$(uname -m 2>/dev/null || true)"
-            if [[ "${CONAN_ARCH}" == "x86_64" ]]; then
-                if [[ "${COMPILER}" == "clang" ]]; then
-                    CONAN_PROFILE="build-config/conan/profile-clang"
-                elif [[ "${COMPILER}" == "gcc" ]]; then
-                    CONAN_PROFILE="build-config/conan/profile-gcc"
-                fi
-            fi
+        # 没有显式 host profile 时才需要默认 profile（build context）。
+        if [[ -z "${CONAN_PROFILE}" ]] &&
+            ! conan profile list 2>/dev/null | grep -Fxq default; then
+            log_info "未找到 Conan 默认 profile，执行 conan profile detect"
+            conan profile detect --force
         fi
 
-        CONAN_ARGS=(install build-config/dependencies/ --build=missing -of="${BUILD_DIR}" -s "build_type=${CONAN_BUILD_TYPE}")
+        # tools.build:jobs 默认按 Conan 的 CPU 探测（容器里可能读到宿主 192 核，
+        # 实际 cpuset 只有 21 核），显式对齐脚本的 JOBS 避免源码构建超订。
+        CONAN_ARGS=(install build-config/dependencies/ --build=missing -of="${BUILD_DIR}"
+                    -s "build_type=${CONAN_BUILD_TYPE}" -c "tools.build:jobs=${JOBS}")
         CONAN_ARGS+=(-o "fastqtools/*:build_testing=True")
         CONAN_ARGS+=(-o "fastqtools/*:build_benchmarks=False")
         if [[ -f "${LOCKFILE_PATH}" ]]; then
@@ -475,22 +514,30 @@ if command -v conan &>/dev/null; then
         fi
         if [[ -n "${CONAN_PROFILE}" && -f "${CONAN_PROFILE}" ]]; then
             CONAN_ARGS+=(-pr:h "${CONAN_PROFILE}")
-        fi
-        if conan profile list 2>/dev/null | grep -Fxq default; then
+            # 原生构建：build context 复用同一 profile。否则 default profile 可能
+            # 声明 clang 却调用 cc/g++，向 GCC 注入它不认识的 -stdlib=libstdc++。
+            CONAN_ARGS+=(-pr:b "${CONAN_PROFILE}")
+        elif conan profile list 2>/dev/null | grep -Fxq default; then
             CONAN_ARGS+=(-pr:b default)
         fi
+
+        # host/build 两个上下文都要对齐本机编译器大版本，避免 profile 写死的
+        # 版本（如 GCC 15）与本机实际版本（如 13）不一致。
+        LOCAL_COMPILER_VERSION=""
         if [[ -n "${CONAN_COMPILER_VERSION_OVERRIDE}" ]]; then
-            CONAN_ARGS+=(-s "compiler.version=${CONAN_COMPILER_VERSION_OVERRIDE}")
-        elif [[ "${COMPILER}" == "clang" ]]; then
-            LOCAL_CLANG_VERSION=$(clang -dumpversion 2>/dev/null | cut -d. -f1 || true)
-            if [[ -n "${LOCAL_CLANG_VERSION}" ]]; then
-                CONAN_ARGS+=(-s "compiler.version=${LOCAL_CLANG_VERSION}")
+            LOCAL_COMPILER_VERSION="${CONAN_COMPILER_VERSION_OVERRIDE}"
+        elif [[ -n "${CONAN_PROFILE}" && -f "${CONAN_PROFILE}" ]]; then
+            # 仅在使用仓库 profile 时按本机版本覆盖；macOS 走 Conan 默认
+            # profile（apple-clang），其版本已由 conan profile detect 对齐。
+            if [[ "${COMPILER}" == "clang" ]]; then
+                LOCAL_COMPILER_VERSION=$(clang -dumpversion 2>/dev/null | cut -d. -f1 || true)
+            elif [[ "${COMPILER}" == "gcc" ]]; then
+                LOCAL_COMPILER_VERSION=$(g++ -dumpfullversion -dumpversion 2>/dev/null | cut -d. -f1 || true)
             fi
-        elif [[ "${COMPILER}" == "gcc" ]]; then
-            LOCAL_GCC_VERSION=$(g++ -dumpfullversion -dumpversion 2>/dev/null | cut -d. -f1 || true)
-            if [[ -n "${LOCAL_GCC_VERSION}" ]]; then
-                CONAN_ARGS+=(-s "compiler.version=${LOCAL_GCC_VERSION}")
-            fi
+        fi
+        if [[ -n "${LOCAL_COMPILER_VERSION}" ]]; then
+            CONAN_ARGS+=(-s "compiler.version=${LOCAL_COMPILER_VERSION}")
+            CONAN_ARGS+=(-s:b "compiler.version=${LOCAL_COMPILER_VERSION}")
         fi
 
         if [[ "$VERBOSE" == "true" && -n "${CONAN_COMPILER_VERSION_OVERRIDE}" ]]; then

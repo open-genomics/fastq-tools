@@ -1,0 +1,18 @@
+# Conan Profile for Clang 21 + libstdc++ on Linux ARM64 (aarch64)
+# Usage: conan install build-config/dependencies/ -pr:h build-config/conan/profile-clang-arm64 --build=missing
+#
+# Conan 用 armv8 表示 64 位 ARM（不是 aarch64）。ARM 服务器上不强制 libc++：
+# 系统 libstdc++ 更常见，且与 Conan 源码构建的依赖保持同一 ABI。
+# compiler.version 会被 scripts/core/build 按本机 clang 大版本覆盖。
+
+[settings]
+arch=armv8
+build_type=Release
+compiler=clang
+compiler.cppstd=23
+compiler.libcxx=libstdc++11
+compiler.version=21
+os=Linux
+
+[conf]
+tools.build:compiler_executables={"c": "clang", "cpp": "clang++"}

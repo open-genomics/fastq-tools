@@ -16,6 +16,11 @@
 # =============================================================================
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 版本号与 doctor/CI 共用同一来源，避免三处各写一份后漂移
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/../core/toolchain.env"
+
 # =============================================================================
 # 参数解析
 # =============================================================================
@@ -28,8 +33,8 @@ for arg in "$@"; do
     esac
 done
 
-CMAKE_VERSION="4.0.2"
-CONAN_VERSION="2.24.0"
+CMAKE_VERSION="${EXPECTED_CMAKE_CI}"
+CONAN_VERSION="${EXPECTED_CONAN_CI}"
 
 echo ">>> FastQTools Release Build"
 echo "    Compiler: ${COMPILER}"
@@ -103,9 +108,14 @@ install_clang_debian() {
         clang-21 lld-21 libc++-21-dev libc++abi-21-dev
     rm -f llvm.sh
 
-    update-alternatives --install /usr/bin/clang   clang   /usr/bin/clang-21   100
-    update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-21 100
-    update-alternatives --install /usr/bin/lld     lld     /usr/bin/lld-21     100
+    # priority 200 + 显式 --set：与发行版预装的旧 clang 同优先级时，
+    # alternatives 的 auto 模式不会自动切换。
+    update-alternatives --install /usr/bin/clang   clang   /usr/bin/clang-21   200
+    update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-21 200
+    update-alternatives --install /usr/bin/lld     lld     /usr/bin/lld-21     200
+    update-alternatives --set clang   /usr/bin/clang-21   || true
+    update-alternatives --set clang++ /usr/bin/clang++-21 || true
+    update-alternatives --set lld     /usr/bin/lld-21     || true
 
     rm -rf /usr/include/c++/v1
     ln -sf /usr/lib/llvm-21/include/c++/v1 /usr/include/c++/v1
@@ -128,13 +138,29 @@ install_cmake() {
         *)       echo "不支持的架构: $ARCH"; exit 1 ;;
     esac
 
-    wget -q --tries=3 --waitretry=5 "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-${CMAKE_ARCH}.tar.gz" -O /tmp/cmake.tar.gz
+    local archive_dir tarball checksum_file expected_sha actual_sha
+    archive_dir="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '${archive_dir}'; trap - RETURN" RETURN
+    tarball="cmake-${CMAKE_VERSION}-linux-${CMAKE_ARCH}.tar.gz"
+    local base_url="https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}"
+
+    wget -q --tries=3 --waitretry=5 "${base_url}/${tarball}" -O "${archive_dir}/${tarball}"
+    checksum_file="cmake-${CMAKE_VERSION}-SHA-256.txt"
+    wget -q --tries=3 --waitretry=5 "${base_url}/${checksum_file}" -O "${archive_dir}/${checksum_file}"
+    expected_sha="$(grep -E "[[:space:]]${tarball}$" "${archive_dir}/${checksum_file}" 2>/dev/null |
+        awk '{print $1}' | head -1 || true)"
+    actual_sha="$(sha256sum "${archive_dir}/${tarball}" | awk '{print $1}')"
+    if [ -z "$expected_sha" ] || [ "$expected_sha" != "$actual_sha" ]; then
+        echo ">>> 错误: CMake 归档校验失败（期望: ${expected_sha:-未找到}，实际: ${actual_sha}）" >&2
+        exit 1
+    fi
+
     mkdir -p /opt
-    tar -C /opt -xzf /tmp/cmake.tar.gz
+    tar -C /opt -xzf "${archive_dir}/${tarball}"
     ln -sf "/opt/cmake-${CMAKE_VERSION}-linux-${CMAKE_ARCH}/bin/cmake" /usr/local/bin/cmake
     ln -sf "/opt/cmake-${CMAKE_VERSION}-linux-${CMAKE_ARCH}/bin/ctest" /usr/local/bin/ctest
     ln -sf "/opt/cmake-${CMAKE_VERSION}-linux-${CMAKE_ARCH}/bin/cpack" /usr/local/bin/cpack
-    rm -f /tmp/cmake.tar.gz
 }
 
 # =============================================================================
@@ -193,17 +219,46 @@ echo ">>> Conan 配置..."
 conan profile detect --force
 
 echo ">>> Conan 安装依赖..."
-CONAN_ARGS="--build=missing -s build_type=Release -of=${BUILD_DIR} -o fastqtools/*:build_testing=False -o fastqtools/*:build_benchmarks=False"
+CONAN_ARGS=(
+    --build=missing
+    -s build_type=Release
+    -of="${BUILD_DIR}"
+    -o "fastqtools/*:build_testing=False"
+    -o "fastqtools/*:build_benchmarks=False"
+    # 容器内 nproc 可能小于宿主核数；显式传给 Conan 避免源码构建超订
+    -c "tools.build:jobs=$(nproc)"
+)
 
-if [ "$COMPILER" = "clang" ] && [ -f "build-config/conan/profile-clang" ]; then
-    CONAN_ARGS="${CONAN_ARGS} -pr:h build-config/conan/profile-clang"
+# 按架构选择 host profile：ARM64 不能复用写死 arch=x86_64 的 x86 profile。
+# build context 复用同一 profile，确保 tools.build:compiler_executables 生效，
+# 避免 default profile 声明 clang 却调用 cc/g++（会注入 -stdlib=libc++）。
+case "$(uname -m)" in
+    x86_64|amd64)  CONAN_PROFILE="build-config/conan/profile-${COMPILER}" ;;
+    aarch64|arm64) CONAN_PROFILE="build-config/conan/profile-${COMPILER}-arm64" ;;
+    *)             CONAN_PROFILE="" ;;
+esac
+if [ -n "$CONAN_PROFILE" ] && [ -f "$CONAN_PROFILE" ]; then
+    CONAN_ARGS+=(-pr:h "$CONAN_PROFILE" -pr:b "$CONAN_PROFILE")
+
+    # profile 里的 compiler.version 是 CI 基准（clang 21 / gcc 15）；
+    # Alpine 或未钉 alternatives 的容器可能装的是更旧版本，按本机覆盖。
+    LOCAL_COMPILER_VERSION=""
+    if [ "$COMPILER" = "clang" ]; then
+        LOCAL_COMPILER_VERSION="$(clang -dumpversion 2>/dev/null | cut -d. -f1 || true)"
+    elif [ "$COMPILER" = "gcc" ]; then
+        LOCAL_COMPILER_VERSION="$(g++ -dumpfullversion -dumpversion 2>/dev/null | cut -d. -f1 || true)"
+    fi
+    if [ -n "$LOCAL_COMPILER_VERSION" ]; then
+        CONAN_ARGS+=(-s "compiler.version=${LOCAL_COMPILER_VERSION}"
+                     -s:b "compiler.version=${LOCAL_COMPILER_VERSION}")
+    fi
 fi
 
 if [ "$STATIC" = "true" ]; then
-    CONAN_ARGS="${CONAN_ARGS} -o *:shared=False"
+    CONAN_ARGS+=(-o "*:shared=False")
 fi
 
-conan install build-config/dependencies/ ${CONAN_ARGS}
+conan install build-config/dependencies/ "${CONAN_ARGS[@]}"
 
 # =============================================================================
 # CMake 配置
@@ -232,7 +287,7 @@ cmake "${CMAKE_ARGS[@]}"
 # 构建
 # =============================================================================
 echo ">>> 构建..."
-ninja -C ${BUILD_DIR} -j "$(nproc)"
+ninja -C "${BUILD_DIR}" -j "$(nproc)"
 
 # =============================================================================
 # 验证

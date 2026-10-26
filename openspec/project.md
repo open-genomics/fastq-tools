@@ -27,6 +27,7 @@ Completed, merged, and moved under `openspec/changes/archive/`:
 | Date | Change | Capability |
 |---|---|---|
 | 2026-08-19 | `define-cpu-build-profiles` | `build-portability` |
+| 2026-10-26 | `add-arm64-build-support` | `build-portability` |
 
 ## Authority rules
 

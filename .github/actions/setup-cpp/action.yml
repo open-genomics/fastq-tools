@@ -185,12 +185,17 @@ runs:
         fi
 
         if [[ '${{ inputs.compiler }}' == 'clang' ]]; then
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${{ inputs.llvm-version }} 100
-          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-${{ inputs.llvm-version }} 100
-          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-${{ inputs.llvm-version }} 100
+          # runner 镜像可能预装 clang-18（同为 priority 100）；同优先级 auto 模式
+          # 不会切换，必须提高优先级并显式 --set，否则 CI 实际用旧 clang 构建。
+          for tool in clang clang++ ld.lld; do
+            sudo update-alternatives --install "/usr/bin/${tool}" "${tool}" \
+              "/usr/bin/${tool}-${{ inputs.llvm-version }}" 200
+            sudo update-alternatives --set "${tool}" "/usr/bin/${tool}-${{ inputs.llvm-version }}" || true
+          done
         fi
         if [[ '${{ inputs.install-clang-tools }}' == 'true' ]]; then
-          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-${{ inputs.llvm-version }} 100
+          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-${{ inputs.llvm-version }} 200
+          sudo update-alternatives --set clang-tidy /usr/bin/clang-tidy-${{ inputs.llvm-version }} || true
 
           # 与下方 clang-format 同样的问题：runner 镜像自带的同名工具若不是
           # update-alternatives 管理的，注册后指向不会改变。这里同样校验并在必要时
@@ -213,7 +218,8 @@ runs:
           echo "clang-tidy: $(clang-tidy --version 2>&1 | head -1) @ $(command -v clang-tidy 2>/dev/null)"
         fi
         if [[ '${{ inputs.install-clang-format }}' == 'true' ]]; then
-          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-${{ inputs.llvm-version }} 100
+          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-${{ inputs.llvm-version }} 200
+          sudo update-alternatives --set clang-format /usr/bin/clang-format-${{ inputs.llvm-version }} || true
 
           # runner 镜像自带的 clang-format 若不是 update-alternatives 管理的，上面的
           # 注册不足以改变 /usr/bin/clang-format 的实际指向——实测 ubuntu-24.04 上

@@ -5,22 +5,21 @@
 - C++23 编译器（GCC 13+ 或 Clang 17+ 最低）
 - CMake 3.28+
 - Conan 2.x
-- Linux 原生支持；macOS 可用 `./scripts/core/install-deps`（Homebrew）后构建；Windows 用 Docker 或 WSL
-
-## 安装 Conan
-
-FastQTools 用 Conan 2.x 管理 C++ 依赖。`scripts/core/install-deps` 不会安装 Conan，需要先手动安装：
-
-```bash
-pipx install conan        # 或 pip install conan
-conan profile detect      # 生成默认 profile
-```
+- Linux x86-64 / ARM64（aarch64）原生支持；macOS 可用 `./scripts/core/install-deps`（Homebrew）后构建；Windows 用 Docker 或 WSL
 
 ## 安装依赖
+
+`install-deps` 会安装 Clang / clang-format / clang-tidy、CMake（Kitware 官方归档，
+满足 3.28+）、Ninja、Conan 2.x 以及 zlib 等系统库；root 环境下无需 `sudo`：
 
 ```bash
 ./scripts/core/install-deps
 ```
+
+> 若偏好手动安装 Conan：`pipx install conan`（或 `pip install --user conan`），
+> 然后 `conan profile detect`。ARM64 上构建脚本会自动选择
+> `build-config/conan/profile-*-arm64`；ConanCenter 无 Linux armv8 预编译包，
+> 首次构建会从源码编译 oneTBB/hwloc/zlib-ng/gtest。
 
 ## 构建
 

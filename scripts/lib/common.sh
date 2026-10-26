@@ -113,6 +113,13 @@ get_default_cmake_preset() {
     local sanitizer="${3:-}"
     local coverage="${4:-false}"
 
+    # Linux ARM64 不套用预设：clang 预设强制 -stdlib=libc++，而 ARM 服务器
+    # 通常使用系统 libstdc++（Conan 依赖也按 libstdc++ 构建）。返回非零让
+    # scripts/core/build 走显式 CMake 参数路径，保持 ABI 一致。
+    if [[ "$(detect_os)" == "linux" && "$(uname -m 2>/dev/null)" =~ ^(aarch64|arm64)$ ]]; then
+        return 1
+    fi
+
     if [[ "${coverage}" == "true" ]]; then
         if [[ "${compiler}" == "gcc" ]]; then
             echo "coverage"
@@ -142,6 +149,64 @@ get_default_cmake_preset() {
             return 1
             ;;
     esac
+}
+
+# 根据主机架构与编译器返回 Conan host profile 路径
+# （Conan 用 armv8 表示 64 位 ARM）。未知架构返回非零。
+get_conan_profile() {
+    local compiler="${1:-clang}"
+    local os arch
+    os="$(detect_os)"
+    arch="$(uname -m 2>/dev/null || echo unknown)"
+
+    # 仓库内 profile 均为 os=Linux；macOS（含 Apple Silicon）交给 Conan
+    # 默认 profile，避免把 Linux 依赖图套到 macOS 上。
+    if [[ "${os}" != "linux" ]]; then
+        return 1
+    fi
+
+    case "${arch}" in
+        x86_64|amd64)
+            echo "build-config/conan/profile-${compiler}"
+            ;;
+        aarch64|arm64)
+            echo "build-config/conan/profile-${compiler}-arm64"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# 将 pip --user 的脚本目录加入当前 PATH（存在且尚未包含时）。
+# install-deps 无法修改父 shell 环境，build/doctor 需自行探测，否则刚装好的
+# conan 在下一个命令里仍然 “not found”。Linux 为 ~/.local/bin，
+# macOS 为 ~/Library/Python/X.Y/bin，用 site --user-base 统一推导。
+ensure_pip_user_bin_in_path() {
+    local conan_major
+    # 已有可用的 Conan 2 时不改 PATH，避免用户目录里的其他工具遮蔽系统工具
+    if command -v conan >/dev/null 2>&1; then
+        conan_major="$(conan --version 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+        if [[ "$conan_major" == "2" ]]; then
+            return 0
+        fi
+    fi
+
+    local user_base user_bin
+    command -v python3 >/dev/null 2>&1 || return 0
+    user_base="$(python3 -m site --user-base 2>/dev/null || true)"
+    [[ -n "$user_base" ]] || return 0
+    user_bin="${user_base}/bin"
+    # 只有该目录确实含 conan 时才前置，缩小对其他工具的遮蔽面
+    [[ -x "${user_bin}/conan" ]] || return 0
+    case ":${PATH}:" in
+        *":${user_bin}:"*) ;;
+        *)
+            export PATH="${user_bin}:${PATH}"
+            hash -r 2>/dev/null || true
+            ;;
+    esac
+    return 0
 }
 
 # 获取构建目录名称（与 CMakePresets.json binaryDir 一致）
@@ -556,7 +621,8 @@ get_tool_version() {
 # 导出所有公共函数供子 shell 使用
 export -f log_info log_success log_warning log_error log_debug
 export -f log_separator log_section
-export -f get_project_root get_build_dir get_default_cmake_preset find_compile_commands_dir
+export -f get_project_root get_build_dir get_conan_profile get_default_cmake_preset find_compile_commands_dir
+export -f ensure_pip_user_bin_in_path
 export -f require_command require_commands
 export -f ensure_directory safe_remove_dir check_executable
 export -f get_cpu_cores normalize_build_type normalize_compiler normalize_sanitizer

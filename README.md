@@ -101,7 +101,7 @@ auto stats = pipeline.run();
 
 ## 快速开始
 
-**环境要求**：GCC 13+ / Clang 17+，CMake 3.28+，Conan 2.x。Linux 原生支持；macOS 可用 `./scripts/core/install-deps`（需 Homebrew）后构建；Windows 建议 WSL 或 Docker。
+**环境要求**：GCC 13+ / Clang 17+，CMake 3.28+，Conan 2.x。Linux x86-64 与 ARM64（aarch64）原生支持；macOS 可用 `./scripts/core/install-deps`（需 Homebrew）后构建；Windows 建议 WSL 或 Docker。
 
 ```bash
 git clone https://github.com/open-genomics/fastq-tools.git
@@ -128,6 +128,28 @@ x86-64 或 ARM CPU 上运行。如需针对特定 CPU 优化：
 ```
 
 > **注意**：项目不实现运行时 SIMD dispatch。选择的基线在编译时固定。
+
+### ARM64（aarch64）服务器
+
+构建脚本按 `uname -m` 自动选择 `build-config/conan/profile-*-arm64`
+（Conan 侧写作 `arch=armv8`）。ARM 上默认使用系统 libstdc++，不套用 x86 的
+clang preset，因此无需安装 libc++：
+
+```bash
+./scripts/core/install-deps   # Clang 21 + CMake 4.3.4 + Ninja + Conan 2.x
+./scripts/core/build          # 产物: build/clang-release/FastQTools
+./scripts/core/build --compiler gcc   # 需系统已有 GCC 13+（install-deps 不升级 GCC）
+```
+
+首次构建会从源码编译 oneTBB、hwloc、zlib-ng、gtest——ConanCenter 目前不提供
+Linux armv8 预编译包。`--threads` 默认是 1，跑满可用核请显式传参：
+
+```bash
+./build/clang-release/FastQTools stat -i sample.fastq --threads "$(nproc)"
+```
+
+> 受限容器里 TSan 可能因 seccomp 禁止 `personality` 而无法启动，这属于环境限制；
+> 日常请使用 ASan / UBSan。
 
 示例输入不随仓库附带，先用 `scripts/datagen/gen_fastq.py` 生成示例数据：`python3 scripts/datagen/gen_fastq.py -o sample.fastq && gzip -kf sample.fastq`。
 

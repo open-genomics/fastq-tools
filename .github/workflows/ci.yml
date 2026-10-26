@@ -45,7 +45,7 @@ env:
 # 动态矩阵：job 级 if 不可用 matrix 上下文，只能用 fromJSON 的静态 matrix。
 # push/PR 输出空数组（build-and-test 自然跳过）；workflow_dispatch 按 suite 映射。
 # 注意：矩阵条目必须携带 build-and-test 引用的全部字段（compiler/cache_slug/
-# build_command/test_command），缺失会被求值为空脚本并静默报绿。
+# build_command/test_command/runs_on），缺失会被求值为空脚本并静默报绿。
 jobs:
   resolve-matrix:
     name: Resolve matrix
@@ -65,9 +65,11 @@ jobs:
           python3 - <<'PYEOF' >> "$GITHUB_OUTPUT"
           import json, os
 
-          def entry(name, compiler, cache_slug, build_command, test_command):
+          def entry(name, compiler, cache_slug, build_command, test_command,
+                    runs_on="ubuntu-latest"):
               return {"name": name, "compiler": compiler, "cache_slug": cache_slug,
-                      "build_command": build_command, "test_command": test_command}
+                      "build_command": build_command, "test_command": test_command,
+                      "runs_on": runs_on}
 
           gcc_build = "./scripts/core/build --preset gcc-release --no-lto"
           gcc_test = "./scripts/core/test --preset gcc-release --timeout 180"
@@ -80,7 +82,7 @@ jobs:
           clang_test_san = ("ctest --test-dir build/ci-clang-{slug} --output-on-failure "
                             "--parallel $(nproc) --exclude-regex packaging_test")
 
-          all_entries = [
+          x86_entries = [
               entry("GCC Release", "gcc", "gcc-release", gcc_build, gcc_test),
               entry("Clang Release", "clang", "clang-release",
                     clang_build_rel.format(slug="release"), clang_test_rel),
@@ -95,17 +97,31 @@ jobs:
                     clang_test_san.format(slug="ubsan")),
           ]
 
+          # ARM64 使用 GitHub 托管的 arm64 runner（公共仓库免费）。clang 预设
+          # 在 ARM 上会强制 -stdlib=libc++，这里用显式 build-dir + arm64 profile
+          # 走系统 libstdc++，与 Conan 依赖 ABI 保持一致。
+          arm_entries = [
+              entry("ARM64 Clang Release", "clang", "clang-arm64-release",
+                    "./scripts/core/build --compiler clang --type Release "
+                    "--build-dir build/ci-clang-arm64 "
+                    "--conan-profile build-config/conan/profile-clang-arm64 --no-lto",
+                    "./scripts/core/test --build-dir build/ci-clang-arm64 --timeout 180",
+                    runs_on="ubuntu-24.04-arm"),
+          ]
+
+          sanitizer_entries = x86_entries[2:]
+
           if os.environ["EVENT_NAME"] != "workflow_dispatch":
               matrix = []
           elif os.environ["INPUT_SUITE"] == "quick":
-              matrix = all_entries[:2]
+              matrix = x86_entries[:2]
           elif os.environ["INPUT_SUITE"] == "sanitizers":
-              matrix = all_entries[2:]
+              matrix = sanitizer_entries
           elif os.environ["INPUT_SUITE"] in ("coverage", "fuzz"):
               # 这些 suite 只跑 coverage / fuzz-smoke 自己的 job，无构建矩阵
               matrix = []
           else:
-              matrix = all_entries
+              matrix = x86_entries + arm_entries
 
           print("matrix=" + json.dumps(matrix))
           PYEOF
@@ -163,11 +179,11 @@ jobs:
           # 二者 package_id 不同；而 actions/cache 不会覆盖已存在的同 key 条目，
           # 共享精确 key 会产生保存竞态，导致其中一方的包永远无法持久化。
           # restore-keys 前缀回退已提供跨 job 的缓存复用（源码包等共享内容）。
-          key: ${{ runner.os }}-conan-gcc-analysis-${{ hashFiles('build-config/dependencies/**') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-conan-gcc-analysis-${{ hashFiles('build-config/dependencies/**') }}
           restore-keys: |
-            ${{ runner.os }}-conan-gcc-analysis-
-            ${{ runner.os }}-conan-gcc-
-            ${{ runner.os }}-conan-
+            ${{ runner.os }}-${{ runner.arch }}-conan-gcc-analysis-
+            ${{ runner.os }}-${{ runner.arch }}-conan-gcc-
+            ${{ runner.os }}-${{ runner.arch }}-conan-
 
       - name: Setup analysis toolchain
         uses: ./.github/actions/setup-cpp
@@ -196,8 +212,12 @@ jobs:
     # 不创建任何 job，并把**整个 run 判为 failure**——即使其余 job 全绿。实测
     # push 触发的 run 只有 5 个 job（矩阵 job 缺席）却结论 failure。
     # if 在 job 级可用（只有 matrix 上下文不可用），故不能靠矩阵本身表达这个条件。
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    # coverage/fuzz suite 的 matrix 为空；空矩阵不会产生 skipped job，而是让整个
+    # run 失败，因此必须在该 job 的 if 里显式排除这两个 suite。
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.suite != 'coverage' && inputs.suite != 'fuzz'
+    runs-on: ${{ matrix.runs_on }}
     needs: resolve-matrix
     strategy:
       fail-fast: false
@@ -224,10 +244,11 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.conan2
-          key: ${{ runner.os }}-conan-${{ matrix.compiler }}-${{ hashFiles('build-config/dependencies/**') }}
+          # runner.arch 区分 X64/ARM64：两者 package_id 不同，不能共用缓存主键
+          key: ${{ runner.os }}-${{ runner.arch }}-conan-${{ matrix.compiler }}-${{ hashFiles('build-config/dependencies/**') }}
           restore-keys: |
-            ${{ runner.os }}-conan-${{ matrix.compiler }}-
-            ${{ runner.os }}-conan-
+            ${{ runner.os }}-${{ runner.arch }}-conan-${{ matrix.compiler }}-
+            ${{ runner.os }}-${{ runner.arch }}-conan-
 
       - name: Cache ccache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -235,10 +256,10 @@ jobs:
           path: ~/.ccache
           # cache_slug 编码 compiler + 构建类型 + sanitizer；主键随 commit 轮换，
           # restore-keys 回退到同 slug 的历史缓存
-          key: ${{ runner.os }}-ccache-${{ matrix.cache_slug }}-${{ github.sha }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ccache-${{ matrix.cache_slug }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-ccache-${{ matrix.cache_slug }}-
-            ${{ runner.os }}-ccache-
+            ${{ runner.os }}-${{ runner.arch }}-ccache-${{ matrix.cache_slug }}-
+            ${{ runner.os }}-${{ runner.arch }}-ccache-
 
       - name: Setup build toolchain
         uses: ./.github/actions/setup-cpp
@@ -288,21 +309,21 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.conan2
-          key: ${{ runner.os }}-conan-clang-fuzz-${{ hashFiles('build-config/dependencies/**') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-conan-clang-fuzz-${{ hashFiles('build-config/dependencies/**') }}
           restore-keys: |
-            ${{ runner.os }}-conan-clang-fuzz-
-            ${{ runner.os }}-conan-clang-
-            ${{ runner.os }}-conan-
+            ${{ runner.os }}-${{ runner.arch }}-conan-clang-fuzz-
+            ${{ runner.os }}-${{ runner.arch }}-conan-clang-
+            ${{ runner.os }}-${{ runner.arch }}-conan-
 
       - name: Cache ccache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.ccache
-          key: ${{ runner.os }}-ccache-clang-fuzz-${{ github.sha }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ccache-clang-fuzz-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-ccache-clang-fuzz-
-            ${{ runner.os }}-ccache-clang-
-            ${{ runner.os }}-ccache-
+            ${{ runner.os }}-${{ runner.arch }}-ccache-clang-fuzz-
+            ${{ runner.os }}-${{ runner.arch }}-ccache-clang-
+            ${{ runner.os }}-${{ runner.arch }}-ccache-
 
       - name: Setup build toolchain
         uses: ./.github/actions/setup-cpp
@@ -380,11 +401,11 @@ jobs:
           # 独立主键（-coverage-）：与 static-analysis 同为 gcc-Debug 二进制，但
           # actions/cache 不覆盖已存在的同 key 条目，共享精确 key 会因保存竞态
           # 使一方无法持久化；restore-keys 前缀回退已提供跨 job 复用。
-          key: ${{ runner.os }}-conan-gcc-coverage-${{ hashFiles('build-config/dependencies/**') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-conan-gcc-coverage-${{ hashFiles('build-config/dependencies/**') }}
           restore-keys: |
-            ${{ runner.os }}-conan-gcc-coverage-
-            ${{ runner.os }}-conan-gcc-
-            ${{ runner.os }}-conan-
+            ${{ runner.os }}-${{ runner.arch }}-conan-gcc-coverage-
+            ${{ runner.os }}-${{ runner.arch }}-conan-gcc-
+            ${{ runner.os }}-${{ runner.arch }}-conan-
 
       - name: Setup coverage toolchain
         uses: ./.github/actions/setup-cpp

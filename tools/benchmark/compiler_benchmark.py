@@ -93,20 +93,162 @@ def get_cpu_model() -> str:
     cpuinfo = Path("/proc/cpuinfo")
     if cpuinfo.exists():
         for line in cpuinfo.read_text(encoding="ascii", errors="ignore").splitlines():
-            if line.lower().startswith("model name"):
-                return line.split(":", 1)[1].strip()
-    return platform.processor() or "unknown"
+            name, _, value = line.partition(":")
+            if name.strip() in {"model name", "Model", "Hardware", "cpu model"}:
+                model = value.strip()
+                if model:
+                    return model
+
+    # ARM64 服务器通常不在 /proc/cpuinfo 暴露 model name：
+    # lscpu（MIDR 解码，固定 C locale）→ device tree / DMI 整机型号。
+    try:
+        lscpu = subprocess.run(
+            ["lscpu"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "LC_ALL": "C", "LANGUAGE": ""},
+        )
+    except OSError:
+        lscpu = None
+    if lscpu is not None:
+        for line in lscpu.stdout.splitlines():
+            if line.startswith("Model name:"):
+                model = line.split(":", 1)[1].strip()
+                if model and model not in {"-", "N/A", "Not Specified"}:
+                    return model
+
+    for path in ("/proc/device-tree/model", "/sys/firmware/devicetree/base/model"):
+        device_tree = Path(path)
+        if device_tree.exists():
+            model = device_tree.read_bytes().replace(b"\0", b"").decode("utf-8", "ignore").strip()
+            if model:
+                return model
+
+    dmi = Path("/sys/devices/virtual/dmi/id/product_name")
+    if dmi.exists():
+        model = dmi.read_text(encoding="utf-8", errors="ignore").strip()
+        if model:
+            return model
+
+    return platform.processor() or platform.machine() or "unknown"
+
+
+CGROUP_UNLIMITED = 1 << 60
+
+
+def _read_cgroup_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="ascii", errors="ignore").strip()
+    except OSError:
+        return ""
+
+
+def _cgroup_path(controller: Optional[str]) -> Optional[str]:
+    """返回进程自身 cgroup 路径；controller=None 表示 cgroup v2。"""
+    content = _read_cgroup_text(Path("/proc/self/cgroup"))
+    for line in content.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) != 3:
+            continue
+        _, controllers, relative = parts
+        if controller is None:
+            if parts[0] == "0" and controllers == "":
+                return relative
+        elif controller in controllers.split(","):
+            return relative
+    return None
+
+
+def _cgroup_candidates(controller: Optional[str], mount: str, leaf: str) -> List[Path]:
+    base = Path("/sys/fs/cgroup") / mount if mount else Path("/sys/fs/cgroup")
+    candidates: List[Path] = []
+    relative = _cgroup_path(controller)
+    if relative is not None:
+        candidates.append(base / relative.lstrip("/") / leaf)
+    # /proc/self/cgroup 不可读或旧布局时的挂载根兜底
+    candidates.append(base / leaf)
+    return candidates
+
+
+def _parse_cgroup_limit(raw: str) -> Optional[int]:
+    text = raw.strip()
+    if not text or text == "max" or not text.isdigit():
+        return None
+    value = int(text)
+    # cgroup v1 用接近 2^63 的哨兵表示无限额
+    if value == 0 or value >= CGROUP_UNLIMITED:
+        return None
+    return value
 
 
 def get_memory_bytes() -> int:
+    host_bytes = 0
     meminfo = Path("/proc/meminfo")
     if meminfo.exists():
         for line in meminfo.read_text(encoding="ascii", errors="ignore").splitlines():
             if line.startswith("MemTotal"):
                 parts = line.split()
                 if len(parts) >= 2:
-                    return int(parts[1]) * 1024
-    return 0
+                    host_bytes = int(parts[1]) * 1024
+                    break
+
+    # 容器内 MemTotal 报宿主内存；cgroup 限额才是实际可用预算。
+    limit: Optional[int] = None
+    for path in _cgroup_candidates(None, "", "memory.max"):
+        limit = _parse_cgroup_limit(_read_cgroup_text(path))
+        if limit is not None:
+            break
+    if limit is None:
+        for path in _cgroup_candidates("memory", "memory", "memory.limit_in_bytes"):
+            limit = _parse_cgroup_limit(_read_cgroup_text(path))
+            if limit is not None:
+                break
+    if limit is not None and (host_bytes == 0 or limit < host_bytes):
+        return limit
+    return host_bytes
+
+
+def _parse_cpu_quota(quota_raw: str, period_raw: str) -> Optional[int]:
+    quota_text = quota_raw.strip()
+    period_text = period_raw.strip()
+    if not quota_text or quota_text in {"max", "-1"}:
+        return None
+    if not quota_text.isdigit() or not period_text.isdigit():
+        return None
+    quota = int(quota_text)
+    period = int(period_text)
+    if quota <= 0 or period <= 0:
+        return None
+    return (quota + period - 1) // period  # ceil(quota / period)
+
+
+def _read_cpu_quota() -> Optional[int]:
+    for path in _cgroup_candidates(None, "", "cpu.max"):
+        parts = _read_cgroup_text(path).split()
+        if len(parts) == 2:
+            quota = _parse_cpu_quota(parts[0], parts[1])
+            if quota is not None:
+                return quota
+    for path in _cgroup_candidates("cpu", "cpu", "cpu.cfs_quota_us"):
+        quota = _parse_cpu_quota(
+            _read_cgroup_text(path),
+            _read_cgroup_text(path.with_name("cpu.cfs_period_us")),
+        )
+        if quota is not None:
+            return quota
+    return None
+
+
+def get_core_count() -> int:
+    try:
+        affinity = len(os.sched_getaffinity(0))
+    except AttributeError:
+        affinity = os.cpu_count() or 0
+    quota = _read_cpu_quota()
+    if affinity > 0:
+        return min(affinity, quota) if quota is not None else affinity
+    return quota or 0
 
 
 def get_os_version() -> str:
@@ -405,7 +547,7 @@ def main() -> None:
         "git_commit": commit,
         "git_branch": branch,
         "cpu_model": get_cpu_model(),
-        "core_count": os.cpu_count() or 0,
+        "core_count": get_core_count(),
         "memory_bytes": get_memory_bytes(),
         "os_version": get_os_version(),
         "data_dir": str(args.data_dir),

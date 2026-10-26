@@ -1,7 +1,9 @@
 name: Release
 
-# 在 v* tag 上构建 portable Linux 二进制并创建 GitHub Release。
-# 容器内 musl 静态构建仍可用 scripts/ci/release-build，本 workflow 覆盖日常发布。
+# 在 v* tag 上构建 portable Linux 二进制（x86_64 + aarch64）并创建 GitHub Release。
+# 两个架构并行原生构建，产物先上传为 workflow artifact，全部成功后才由 publish
+# job 一次性创建 Release——避免 x86 先发布、ARM 失败时留下不完整版本。
+# 容器内 musl 静态构建仍可用 scripts/ci/release-build。
 on:
   push:
     tags:
@@ -20,9 +22,11 @@ env:
   LLVM_VERSION: '21'
 
 jobs:
-  linux:
+  linux-x86_64:
     name: Linux x86_64
-    runs-on: ubuntu-latest
+    # 钉在 22.04（glibc 2.35）构建 portable 产物；runner 升级到 24.04
+    # 会把二进制最低 glibc 抬到 2.39，导致 22.04 目标机无法启动。
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout
@@ -32,10 +36,11 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.conan2
-          key: ${{ runner.os }}-conan-clang-release-${{ hashFiles('build-config/dependencies/**') }}
+          # runner.arch 区分 X64/ARM64：两者 package_id 不同，不能共用缓存主键
+          key: ${{ runner.os }}-${{ runner.arch }}-conan-clang-release-${{ hashFiles('build-config/dependencies/**') }}
           restore-keys: |
-            ${{ runner.os }}-conan-clang-
-            ${{ runner.os }}-conan-
+            ${{ runner.os }}-${{ runner.arch }}-conan-clang-
+            ${{ runner.os }}-${{ runner.arch }}-conan-
 
       - name: Setup build toolchain
         uses: ./.github/actions/setup-cpp
@@ -44,6 +49,7 @@ jobs:
           conan-version: ${{ env.CONAN_VERSION }}
           llvm-version: ${{ env.LLVM_VERSION }}
           compiler: clang
+          extra-apt-packages: patchelf
 
       - name: Build portable Release
         run: ./scripts/core/build --compiler clang --type Release --cpu-baseline portable --no-lto
@@ -52,21 +58,89 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          mkdir -p dist
-          cp build/clang-release/FastQTools "dist/FastQTools-${version}-linux-x86_64"
-          chmod +x "dist/FastQTools-${version}-linux-x86_64"
-          (cd dist && sha256sum "FastQTools-${version}-linux-x86_64" > "FastQTools-${version}-linux-x86_64.sha256")
-          ./dist/FastQTools-${version}-linux-x86_64 --help >/dev/null
+          ./scripts/ci/package-binary build/clang-release/FastQTools \
+            "FastQTools-${version}-linux-x86_64" dist
+
+      - name: Upload x86_64 artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: release-linux-x86_64
+          path: dist/*
+          retention-days: 7
+
+  linux-aarch64:
+    name: Linux aarch64
+    # 与 x86 保持同一 glibc 基线（22.04 / 2.35）。不要改成 24.04-arm，
+    # 否则 ARM 产物会要求 GLIBC_2.39，在 22.04 服务器上无法运行。
+    runs-on: ubuntu-22.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Cache Conan packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.conan2
+          key: ${{ runner.os }}-${{ runner.arch }}-conan-clang-release-${{ hashFiles('build-config/dependencies/**') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-conan-clang-
+            ${{ runner.os }}-${{ runner.arch }}-conan-
+
+      - name: Setup build toolchain
+        uses: ./.github/actions/setup-cpp
+        with:
+          cmake-version: ${{ env.CMAKE_VERSION }}
+          conan-version: ${{ env.CONAN_VERSION }}
+          llvm-version: ${{ env.LLVM_VERSION }}
+          compiler: clang
+          extra-apt-packages: patchelf
+
+      # 显式 --build-dir 绕过 clang preset：该 preset 强制 -stdlib=libc++，
+      # 而 ARM 构建统一使用系统 libstdc++（见 profile-clang-arm64）。
+      - name: Build portable Release
+        run: >-
+          ./scripts/core/build --compiler clang --type Release
+          --build-dir build/clang-release --cpu-baseline portable --no-lto
+
+      - name: Package binary
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          ./scripts/ci/package-binary build/clang-release/FastQTools \
+            "FastQTools-${version}-linux-aarch64" dist
+
+      - name: Upload aarch64 artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: release-linux-aarch64
+          path: dist/*
+          retention-days: 7
+
+  publish:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: [linux-x86_64, linux-aarch64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Download release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          path: dist
+          merge-multiple: true
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
           notes="FastQTools ${GITHUB_REF_NAME}
 
-          Linux x86_64 portable binary (no -march). See CHANGELOG.md for details."
+          Linux portable tarballs (no -march) for x86_64 and aarch64. Each tarball bundles the
+          runtime libraries (oneTBB/hwloc/libc++ as applicable). See CHANGELOG.md for details."
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
           else

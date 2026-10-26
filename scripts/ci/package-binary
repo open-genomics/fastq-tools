@@ -1,0 +1,85 @@
+#!/bin/bash
+# =============================================================================
+# FastQTools 发布产物打包
+# =============================================================================
+# 把构建产物打成可搬运的 tar.gz：
+#   FastQTools                  可执行文件
+#   lib/*.so*                   非 glibc 核心的运行库（oneTBB/hwloc/libc++ 等）
+#
+# 原因：oneTBB 在 Conan 中是 shared-only，hwloc 也被强制 shared；直接复制
+# 构建目录里的二进制会把构建机的 Conan 缓存绝对 RPATH 带进产物，换台机器
+# 就会 cannot open shared object file。这里复制依赖并把 RPATH 改为 $ORIGIN/lib。
+#
+# 用法: package-binary <binary> <artifact-name> [output-dir]
+# 产物: <output-dir>/<artifact-name>.tar.gz
+#       <output-dir>/<artifact-name>.tar.gz.sha256
+# =============================================================================
+set -euo pipefail
+
+BINARY="${1:?用法: package-binary <binary> <artifact-name> [output-dir]}"
+ARTIFACT="${2:?缺少 artifact 名称}"
+OUTDIR="${3:-dist}"
+
+if [[ ! -x "$BINARY" ]]; then
+    echo "错误: 找不到可执行文件 ${BINARY}" >&2
+    exit 1
+fi
+
+mkdir -p "$OUTDIR"
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+mkdir -p "${STAGE}/lib"
+
+cp "$BINARY" "${STAGE}/FastQTools"
+chmod +x "${STAGE}/FastQTools"
+
+# 静态二进制没有动态依赖，直接打包。
+# 先捕获输出再 grep：ldd 对静态二进制返回非零，pipefail 下管道会判败，
+# 直接写在 if 条件里会让静态分支永远不命中。
+ldd_output="$(ldd "$BINARY" 2>&1 || true)"
+if printf '%s\n' "$ldd_output" | grep -qE 'not a dynamic executable|statically linked'; then
+    tar -C "$STAGE" -czf "${OUTDIR}/${ARTIFACT}.tar.gz" .
+    (cd "$OUTDIR" && sha256sum "${ARTIFACT}.tar.gz" > "${ARTIFACT}.tar.gz.sha256")
+    echo "打包完成（静态链接）: ${OUTDIR}/${ARTIFACT}.tar.gz"
+    exit 0
+fi
+
+if ! command -v patchelf >/dev/null 2>&1; then
+    echo "错误: 需要 patchelf（apt-get install -y patchelf）" >&2
+    exit 1
+fi
+
+# 复制非 glibc 核心的运行库；glibc/loader 由目标系统提供
+while IFS= read -r lib; do
+    case "$(basename "$lib")" in
+        ld-linux*|linux-vdso*|libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|\
+        librt.so.*|libresolv.so.*|libutil.so.*|libnsl.so.*|libcrypt.so.*|libgcc_s.so.*)
+            continue
+            ;;
+    esac
+    cp -L "$lib" "${STAGE}/lib/"
+done < <(ldd "$BINARY" | awk '/=> \// {print $3}' | sort -u)
+
+# 用相对 RPATH 替换构建机的 Conan 缓存绝对路径
+patchelf --set-rpath '$ORIGIN/lib' "${STAGE}/FastQTools"
+
+# 复制出来的库之间的依赖也要能在 lib/ 内解析（DT_RUNPATH 不继承自可执行文件）
+find "${STAGE}/lib" -maxdepth 1 -type f -name '*.so*' -exec \
+    patchelf --set-rpath '$ORIGIN' {} \;
+
+# 屏蔽外部库路径后仍能解析并启动，才算打包成功。
+# 先捕获输出再匹配：ldd 对异常二进制可能非零退出，pipefail 下直接接
+# grep 会把“有未解析库”误判成通过。
+ldd_check="$(env -u LD_LIBRARY_PATH ldd "${STAGE}/FastQTools" 2>&1 || true)"
+if printf '%s\n' "$ldd_check" | grep -q 'not found'; then
+    echo "错误: 打包后仍有未解析的动态库:" >&2
+    printf '%s\n' "$ldd_check" >&2
+    exit 1
+fi
+(cd "$STAGE" && env -u LD_LIBRARY_PATH ./FastQTools --help >/dev/null)
+
+tar -C "$STAGE" -czf "${OUTDIR}/${ARTIFACT}.tar.gz" .
+(cd "$OUTDIR" && sha256sum "${ARTIFACT}.tar.gz" > "${ARTIFACT}.tar.gz.sha256")
+
+echo "打包完成: ${OUTDIR}/${ARTIFACT}.tar.gz"
+echo "  运行库: $(find "${STAGE}/lib" -maxdepth 1 -type f | wc -l) 个"

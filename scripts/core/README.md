@@ -140,7 +140,7 @@
 ```
 
 **检查项**:
-- 版本下限（失败即退出码 1）：clang-format 必须 21.x、CMake ≥3.28、Conan 2.x、编译器支持 C++23
+- 版本下限（失败即退出码 1）：clang-format 必须 21.x、CMake ≥3.28、Conan 2.x；GCC ≥13 或 Clang ≥17（二选一，单个低于下限仅提示）
 - CI 对齐建议（仅提示）：cmake/conan/clang 与 ci.yml 锁定版本的差异
 - 命令遮蔽检测：PATH 中同名工具多副本、解析路径位于用户目录（uv/pip wheel）等"PATH 里恰好是谁"的风险
 - 优化建议：ccache 加速重构建、缺失的 clang-tidy/cppcheck 等

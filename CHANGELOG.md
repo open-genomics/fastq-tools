@@ -16,10 +16,15 @@ This root changelog is the maintained project history. Older granular work logs 
 - `filter --stat` / `--stat-json`：一趟扫描同时写出 FASTQ 与 QC 报告。
 - `scripts/core/doctor`：本地环境体检——工具链版本下限校验、与 ci.yml 锁定版本的差异提示、PATH 命令遮蔽检测（uv/pip wheel 覆盖系统 clang-format 之类的真实事故场景）与优化建议。预期版本集中在新增的 `scripts/core/toolchain.env`（与 ci.yml 对齐的单一事实来源）。
 - `scripts/core/install-deps`：LLVM 工具链（clang/clang-format/clang-tidy）改从 apt.llvm.org 安装固定大版本并 `update-alternatives` 钉住裸命令，与 CI 同源；发行版 apt 源只有旧版 LLVM，会与 CI 的 clang-format 意见相反。钉住后校验解析结果，被发行版同名包/用户目录副本遮蔽时给出告警。
+- aarch64/ARM64 服务器原生构建支持：新增 `profile-clang-arm64` / `profile-gcc-arm64`（Conan `arch=armv8`），`scripts/core/build` 按 `uname -m` 自动选择，并让 native build context 复用同一 profile、同步覆盖编译器版本（避免 Conan 向 GCC 注入 `-stdlib=libstdc++`）；CI 增加 `ubuntu-24.04-arm` 构建/测试 job，Release 的 x86_64/aarch64 两个 job 并行构建、全部成功后才由 `publish` job 一次性发布，且固定使用 Ubuntu 22.04 runner 以保持 glibc 2.35 基线。
+- `scripts/ci/package-binary`：发布产物打包为 tar.gz，内置 oneTBB/hwloc/libc++ 等运行库并把 RPATH 改为 `$ORIGIN/lib`；此前只复制裸二进制会把构建机的 Conan 缓存绝对路径带进产物。
+- `scripts/core/install-deps`：安装 CMake ≥3.28（Kitware 官方 x86_64/aarch64 归档，下载后按 `SHA-256.txt` 校验）与 Conan 2.x（按 pip user scripts 目录修正 PATH 并复核主版本）；root 环境下不再依赖 `sudo` 可执行文件，`--dry-run` 无 sudo 也可用；LLVM alternatives 改为优先级 200 + 显式 `--set`，并补上此前遗漏的 `clang++`（发行版 clang-18 与目标版本同为 priority 100 时，仅 `--install` 不会切换）。`.github/actions/setup-cpp` 同步该修复。
 
 ### Fixed
 - 修复 `.github/workflows/ci.yml` 的 job 级 `if` 非法使用 `matrix` 上下文导致的整体失效（所有 push 0 秒失败、0 个 job，包括 format gate）——改为 `resolve-matrix` job 用 Python 生成完整矩阵（含 build/test 命令等全部字段）+ `fromJSON` 注入，coverage 依赖同步调整。push/PR 仍只跑 format。
 - `scripts/core/lint` 增加 clang-format 版本守卫：解析到非预期大版本时直接报错并指向 `doctor`，不再带着错误版本产出误导性格式结论。
+- benchmark 系统元数据在 ARM/容器上失真：CPU 型号优先用固定 C locale 的 `lscpu`（再回退 device tree / DMI，不再记录成 `aarch64`），核数取 `sched_getaffinity` 与 `cpu.max` CFS 配额的较小值，内存按 `/proc/self/cgroup` 定位进程自身 cgroup 后读取限额（拒绝 `max` 与无限额哨兵）而非宿主 `sysinfo`；`DataCollector` 与 `tools/benchmark/compiler_benchmark.py` 同步。纯解析逻辑下沉到 `src/benchmark/data_collector_detail.h` 并新增表驱动单测。
+- `scripts/core/toolchain.env` 的 GCC/Clang 下限（12/16）与 `CMakeLists.txt`（13/17）不一致，导致 `doctor` 对 GCC 12 给出假阳性；`doctor` 同时改为 gcc/clang 二选一，避免 Clang 21 + 发行版旧 GCC 的 ARM 机器被误判失败。
 
 ### Fixed
 - `filter --adapter-seq` 只识别锚定 3' 末端的 adapter（完整贴端或尾部悬出的部分重叠）：不再对 read 中部的偶然内部匹配做截断。旧实现做全文 `find`，短 adapter 或周期性序列命中时会把匹配位置之后的真实插入片段静默剪掉。

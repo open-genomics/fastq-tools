@@ -1,0 +1,18 @@
+# Conan Profile for GCC 13+ + libstdc++ on Linux ARM64 (aarch64)
+# Usage: conan install build-config/dependencies/ -pr:h build-config/conan/profile-gcc-arm64 --build=missing
+#
+# Conan 用 armv8 表示 64 位 ARM（不是 aarch64）。
+# compiler.version 以 CI 的 GCC 15 为基准，scripts/core/build 会按本机
+# g++ 大版本覆盖，因此 GCC 13/14/15 均可复用此 profile。
+
+[settings]
+arch=armv8
+build_type=Release
+compiler=gcc
+compiler.cppstd=23
+compiler.libcxx=libstdc++11
+compiler.version=15
+os=Linux
+
+[conf]
+tools.build:compiler_executables={"c": "gcc", "cpp": "g++"}

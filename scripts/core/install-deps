@@ -64,9 +64,11 @@ RUNTIME_PACKAGES=(
 # =============================================================================
 DEVELOPMENT_PACKAGES=(
     build-essential
-    cmake
+    # CMake 由 install_cmake_from_kitware 安装：Ubuntu 22.04 的 apt 版本
+    # 3.22 低于 CMakeLists.txt 的 3.28 下限
     ninja-build
     git
+    curl
     pkg-config
     
     # 编译器
@@ -166,11 +168,17 @@ install_packages() {
         log_info "DRY RUN: 将要安装以下包:"
         printf '  - %s\n' "${packages[@]}"
         if [[ "$INSTALL_MODE" != "runtime" ]]; then
-            log_info "DRY RUN: 还将从 apt.llvm.org 安装 LLVM ${EXPECTED_LLVM_VERSION} 工具链:"
-            printf '  - %s\n' "clang-${EXPECTED_LLVM_VERSION}" \
-                "clang-format-${EXPECTED_LLVM_VERSION}" \
-                "clang-tidy-${EXPECTED_LLVM_VERSION}" \
-                "（llvm.sh 下载 + update-alternatives 钉住裸命令）"
+            if [[ "$(detect_os)" == "linux" ]]; then
+                log_info "DRY RUN: 还将从 apt.llvm.org 安装 LLVM ${EXPECTED_LLVM_VERSION} 工具链:"
+                printf '  - %s\n' "clang-${EXPECTED_LLVM_VERSION}" \
+                    "clang-format-${EXPECTED_LLVM_VERSION}" \
+                    "clang-tidy-${EXPECTED_LLVM_VERSION}" \
+                    "（llvm.sh 下载 + update-alternatives 钉住裸命令；clang++ 随 clang 包提供）"
+                log_info "DRY RUN: 还将确保 CMake >= ${EXPECTED_CMAKE_MIN}（必要时安装 ${EXPECTED_CMAKE_CI}，架构 $(uname -m)）"
+            else
+                log_info "DRY RUN: macOS 通过 Homebrew 安装 llvm@${EXPECTED_LLVM_VERSION} 与 cmake"
+            fi
+            log_info "DRY RUN: 还将确保 Conan ${EXPECTED_CONAN_MAJOR}.x（缺失时安装 ${EXPECTED_CONAN_CI}）"
         fi
         return 0
     fi
@@ -192,7 +200,7 @@ install_packages() {
         apt_args+=(--quiet)
     fi
     
-    if ! sudo apt-get "${apt_args[@]}" "${packages[@]}"; then
+    if ! run_privileged apt-get "${apt_args[@]}" "${packages[@]}"; then
         log_error "包安装失败"
         return 1
     fi
@@ -210,7 +218,7 @@ install_packages() {
             return 1
         fi
         # 输出进日志文件而非丢弃：失败时回显尾部便于定位 GPG/网络/源问题
-        if ! sudo bash /tmp/llvm-install.sh "${EXPECTED_LLVM_VERSION}" >"$llvm_log" 2>&1; then
+        if ! run_privileged bash /tmp/llvm-install.sh "${EXPECTED_LLVM_VERSION}" >"$llvm_log" 2>&1; then
             log_error "LLVM ${EXPECTED_LLVM_VERSION} 安装失败（日志尾部如下）:"
             tail -20 "$llvm_log" >&2
             rm -f "$llvm_log" /tmp/llvm-install.sh
@@ -219,27 +227,35 @@ install_packages() {
         rm -f "$llvm_log" /tmp/llvm-install.sh
         # 显式安装 clang-format / clang-tidy（llvm.sh 默认只装 clang/lldb/lld/clangd），
         # 并用 update-alternatives 钉住裸命令，避免 PATH 中被用户目录副本遮蔽
-        if ! sudo apt-get install -y --no-install-recommends \
+        if ! run_privileged apt-get install -y --no-install-recommends \
             "clang-${EXPECTED_LLVM_VERSION}" \
             "clang-format-${EXPECTED_LLVM_VERSION}" \
             "clang-tidy-${EXPECTED_LLVM_VERSION}"; then
             log_error "LLVM ${EXPECTED_LLVM_VERSION} 额外工具安装失败"
             return 1
         fi
-        for tool in clang clang-format clang-tidy; do
+        for tool in clang clang++ clang-format clang-tidy; do
             if [[ -x "/usr/bin/${tool}-${EXPECTED_LLVM_VERSION}" ]]; then
-                sudo update-alternatives --install "/usr/bin/${tool}" "${tool}" \
-                    "/usr/bin/${tool}-${EXPECTED_LLVM_VERSION}" 100
+                # 发行版预装的 clang-18 也是 priority 100；同优先级时 auto 模式
+                # 会保留旧版本，因此提高优先级并显式 --set。
+                run_privileged update-alternatives --install "/usr/bin/${tool}" "${tool}" \
+                    "/usr/bin/${tool}-${EXPECTED_LLVM_VERSION}" 200
+                run_privileged update-alternatives --set "${tool}" \
+                    "/usr/bin/${tool}-${EXPECTED_LLVM_VERSION}" || true
             fi
         done
         # update-alternatives 在目标为普通文件（发行版同名包）时静默不生效
         # （只打 warning 不报错），钉住后必须验证解析结果
-        for tool in clang clang-format clang-tidy; do
+        for tool in clang clang++ clang-format clang-tidy; do
             if command -v "$tool" >/dev/null 2>&1; then
-                local resolved
+                local resolved resolved_target expected_target
                 resolved="$(command -v "$tool")"
-                if [[ "$resolved" != "/usr/bin/${tool}-${EXPECTED_LLVM_VERSION}" ]]; then
-                    log_warning "${tool} 未钉到 ${EXPECTED_LLVM_VERSION}（解析到 ${resolved}）。"
+                # command -v 返回 /usr/bin/clang（alternatives 链接），必须解析到
+                # 最终目标再比较，否则每次安装都会误报“未钉到”。
+                resolved_target="$(readlink -f "$resolved" 2>/dev/null || echo "$resolved")"
+                expected_target="$(readlink -f "/usr/bin/${tool}-${EXPECTED_LLVM_VERSION}" 2>/dev/null || echo "/usr/bin/${tool}-${EXPECTED_LLVM_VERSION}")"
+                if [[ "$resolved_target" != "$expected_target" ]]; then
+                    log_warning "${tool} 未钉到 ${EXPECTED_LLVM_VERSION}（解析到 ${resolved} -> ${resolved_target}）"
                     log_warning "可能被发行版同名包或用户目录副本遮蔽，运行 ./scripts/core/doctor 查看"
                 fi
             fi
@@ -247,6 +263,143 @@ install_packages() {
     fi
     
     return 0
+}
+
+# =============================================================================
+# CMake：发行版 apt 版本可能低于 CMakeLists.txt 下限（如 Ubuntu 22.04 的
+# 3.22），从 Kitware 官方归档安装固定版本并软链到 /usr/local/bin。
+# =============================================================================
+install_cmake_from_kitware() {
+    local current=""
+    if command -v cmake &>/dev/null; then
+        current="$(cmake --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+    fi
+    if [[ -n "$current" ]] && version_ge "$current" "$EXPECTED_CMAKE_MIN"; then
+        log_success "CMake ${current} 已满足 >= ${EXPECTED_CMAKE_MIN}"
+        return 0
+    fi
+
+    local arch
+    case "$(uname -m)" in
+        x86_64|amd64) arch="x86_64" ;;
+        aarch64|arm64) arch="aarch64" ;;
+        *)
+            log_error "不支持的架构: $(uname -m)"
+            return 1
+            ;;
+    esac
+
+    local version="${EXPECTED_CMAKE_CI}"
+    local archive_dir prefix tarball
+    archive_dir="$(mktemp -d)"
+    # RETURN trap 在函数返回时清理临时目录；立即展开路径，避免 local 失效。
+    # 清理后解除 trap，防止后续函数返回时重复执行。
+    # shellcheck disable=SC2064
+    trap "rm -rf '${archive_dir}'; trap - RETURN" RETURN
+    tarball="cmake-${version}-linux-${arch}.tar.gz"
+    prefix="/opt/cmake-${version}-linux-${arch}"
+
+    log_info "安装 CMake ${version} (${arch})..."
+    if ! curl -fL --retry 3 -o "${archive_dir}/${tarball}" \
+        "https://github.com/Kitware/CMake/releases/download/v${version}/${tarball}"; then
+        log_error "CMake 下载失败"
+        return 1
+    fi
+    # Kitware 不提供逐资产的 .sha256，而是在 SHA-256.txt 中列出全部归档
+    local checksum_file expected_sha actual_sha
+    checksum_file="cmake-${version}-SHA-256.txt"
+    if ! curl -fL --retry 3 -o "${archive_dir}/${checksum_file}" \
+        "https://github.com/Kitware/CMake/releases/download/v${version}/${checksum_file}"; then
+        log_error "CMake 校验文件下载失败"
+        return 1
+    fi
+    expected_sha="$(grep -E "[[:space:]]${tarball}$" "${archive_dir}/${checksum_file}" 2>/dev/null |
+        awk '{print $1}' | head -1 || true)"
+    actual_sha="$(sha256sum "${archive_dir}/${tarball}" | awk '{print $1}')"
+    # 校验通过后再以 root 解压，避免临时目录内容被替换
+    if [[ -z "$expected_sha" || "$expected_sha" != "$actual_sha" ]]; then
+        log_error "CMake 归档校验失败（期望: ${expected_sha:-未找到}，实际: ${actual_sha}）"
+        return 1
+    fi
+    if ! run_privileged rm -rf "$prefix" \
+        || ! run_privileged tar -C /opt -xzf "${archive_dir}/${tarball}"; then
+        log_error "CMake 解压失败"
+        return 1
+    fi
+
+    local tool
+    for tool in cmake ctest cpack; do
+        run_privileged ln -sf "${prefix}/bin/${tool}" "/usr/local/bin/${tool}"
+    done
+    hash -r
+
+    current="$(cmake --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+    if [[ -z "$current" ]] || ! version_ge "$current" "$EXPECTED_CMAKE_MIN"; then
+        log_error "CMake 安装后版本仍不满足 >= ${EXPECTED_CMAKE_MIN}（实际: ${current:-未知}）"
+        return 1
+    fi
+    log_success "CMake ${current} 就绪"
+}
+
+# =============================================================================
+# Conan 2.x：pip 安装到用户目录，并生成默认 profile（缺失时）
+# =============================================================================
+install_conan() {
+    local current=""
+    if command -v conan &>/dev/null; then
+        current="$(conan --version 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+    fi
+
+    if [[ "$current" == "$EXPECTED_CONAN_MAJOR" ]]; then
+        log_success "Conan ${current}.x 已安装"
+    else
+        if [[ -n "$current" ]]; then
+            log_warning "检测到 Conan ${current}.x，本仓库要求 ${EXPECTED_CONAN_MAJOR}.x，将安装固定版本"
+        fi
+        log_info "安装 Conan ${EXPECTED_CONAN_CI}..."
+        if ! command -v python3 &>/dev/null; then
+            log_error "未找到 python3，无法安装 Conan"
+            return 1
+        fi
+        if ! python3 -m pip install --user "conan==${EXPECTED_CONAN_CI}"; then
+            # Ubuntu 23.04+ 的 PEP 668 会拒绝非 venv 安装，退回显式覆盖
+            if ! python3 -m pip install --user --break-system-packages \
+                "conan==${EXPECTED_CONAN_CI}"; then
+                log_error "Conan 安装失败"
+                return 1
+            fi
+        fi
+        hash -r
+    fi
+
+    # 不能只看命令是否存在：PATH 中可能仍有旧版 Conan 抢先解析。
+    # pip --user 的脚本目录随平台/版本变化（Linux ~/.local/bin，
+    # macOS ~/Library/Python/X.Y/bin），用 site --user-base 推导并前置。
+    local conan_path conan_major user_base user_bin
+    conan_path="$(command -v conan 2>/dev/null || true)"
+    conan_major="$(conan --version 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+    if [[ -z "$conan_path" || "$conan_major" != "$EXPECTED_CONAN_MAJOR" ]]; then
+        user_base="$(python3 -m site --user-base 2>/dev/null || true)"
+        user_bin="${user_base}/bin"
+        if [[ -n "$user_base" && -x "${user_bin}/conan" ]]; then
+            export PATH="${user_bin}:${PATH}"
+            hash -r
+            log_warning "Conan 位于 ${user_bin}，已临时加入当前 PATH"
+            log_info "如需在新终端使用，请将 ${user_bin} 加入 shell 配置（如 ~/.bashrc）"
+            conan_path="$(command -v conan 2>/dev/null || true)"
+            conan_major="$(conan --version 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+        fi
+    fi
+    if [[ -z "$conan_path" || "$conan_major" != "$EXPECTED_CONAN_MAJOR" ]]; then
+        log_error "未解析到 Conan ${EXPECTED_CONAN_MAJOR}.x（路径: ${conan_path:-未找到}，版本: ${conan_major:-未知}）"
+        log_info "请调整 PATH 顺序或移除旧版 Conan 后重试"
+        return 1
+    fi
+
+    # 仅在缺失默认 profile 时探测，避免覆盖用户自定义 profile
+    if ! conan profile list 2>/dev/null | grep -Fxq default; then
+        conan profile detect --force
+    fi
 }
 
 # =============================================================================
@@ -271,8 +424,8 @@ verify_installation() {
                 done
             fi
             ;;
-        dev)
-            local tools=(cmake ninja git)
+        dev|all)
+            local tools=(cmake ninja git conan)
             if [[ "$(detect_os)" == "macos" ]]; then
                 tools+=(clang)
             else
@@ -283,6 +436,30 @@ verify_installation() {
                     missing+=("$tool")
                 fi
             done
+
+            # CMake 版本下限：apt 的旧版本即使存在也不能用于配置
+            local cmake_version
+            cmake_version="$(cmake --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+            if [[ -n "$cmake_version" ]] && ! version_ge "$cmake_version" "$EXPECTED_CMAKE_MIN"; then
+                missing+=("cmake>=${EXPECTED_CMAKE_MIN}(实际 ${cmake_version})")
+            fi
+
+            # 至少一个满足门禁的 C++ 编译器；macOS 的 AppleClang 版本号
+            # 与上游 LLVM 不同，不做版本下限判定。
+            if [[ "$(detect_os)" != "macos" ]]; then
+                local clang_version gcc_version
+                clang_version="$(get_tool_version clang 2>/dev/null || true)"
+                gcc_version="$(get_tool_version gcc 2>/dev/null || true)"
+                local clang_major="${clang_version%%.*}"
+                local gcc_major="${gcc_version%%.*}"
+                if [[ -n "$clang_major" ]] && (( clang_major >= EXPECTED_CLANG_MIN )); then
+                    :
+                elif [[ -n "$gcc_major" ]] && (( gcc_major >= EXPECTED_GCC_MIN )); then
+                    :
+                else
+                    missing+=("clang>=${EXPECTED_CLANG_MIN} 或 gcc>=${EXPECTED_GCC_MIN}")
+                fi
+            fi
             ;;
     esac
     
@@ -366,6 +543,31 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# root 或 sudo：CI/容器常以 root 运行且可能没有 sudo 可执行文件，
+# 不能硬编码 sudo（否则直接 command not found）。放在参数解析之后，
+# 保证 --help 在无权限环境也能正常显示。
+if [[ "${DRY_RUN}" == "true" ]]; then
+    # dry-run 只打印计划，不应因缺少 sudo 而失败
+    SUDO=()
+elif [[ "${EUID}" -eq 0 ]]; then
+    SUDO=()
+elif command -v sudo &>/dev/null; then
+    SUDO=(sudo)
+else
+    log_error "需要 root 权限或 sudo 才能安装系统包"
+    exit 1
+fi
+
+# 空数组在旧版 bash（macOS 3.2）的 set -u 下展开会报 unbound variable，
+# 用函数封装，root 与非 root 两条路径都安全。
+run_privileged() {
+    if [[ ${#SUDO[@]} -gt 0 ]]; then
+        "${SUDO[@]}" "$@"
+    else
+        "$@"
+    fi
+}
+
 start_timer
 
 log_section "FastQTools 依赖安装"
@@ -384,7 +586,7 @@ if [[ "$SKIP_UPDATE" == "false" ]]; then
             brew update || log_warning "brew update 失败（继续安装）"
         else
             log_info "更新 apt 包列表..."
-            if ! sudo apt-get update -qq; then
+            if ! run_privileged apt-get update -qq; then
                 log_error "更新包列表失败"
                 exit 1
             fi
@@ -431,6 +633,11 @@ select_packages() {
 mapfile -t SELECTED_PACKAGES < <(select_packages "$INSTALL_MODE")
 install_packages "${SELECTED_PACKAGES[@]}" || exit 1
 if [[ "$INSTALL_MODE" != "runtime" && "$DRY_RUN" == "false" ]]; then
+    # Linux 上 Kitware 归档同时覆盖 x86_64/aarch64；macOS 由 brew 提供 CMake
+    if [[ "$(detect_os)" == "linux" ]]; then
+        install_cmake_from_kitware || exit 1
+    fi
+    install_conan || exit 1
     install_python_deps
 fi
 
