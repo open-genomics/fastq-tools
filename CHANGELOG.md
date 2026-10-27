@@ -31,6 +31,7 @@ This root changelog is the maintained project history. Older granular work logs 
 - QC 报告目标与 FASTQ 输入/输出或彼此别名时在参数阶段拒绝：`stat -i x -o x` 不再把输入文件覆盖成报告，`filter --stat <output>` 不再覆盖刚产出的 FASTQ。库层 `writeStatisticsOutputs` 同步兜底校验。
 
 ### Changed
+- `QualityTrimmer` 在 ARM64（aarch64）上为 5'/3' 质量扫描增加 NEON 路径：长低质量尾部场景约快 6–7 倍，典型高质量 read 走单字节快速路径、无性能回退；阈值在构造时预计算，NaN/巨大阈值不再触发 `int` 转换 UB。x86 AVX2 路径与阈值语义不变。
 - `ReadMutatorInterface::process()` 返回 `bool`（记录是否被本调用修改），管道据此累计 `modifiedReads`，移除逐 read 全记录比较的热点补偿。自定义 mutator 需适配新签名。
 - 移除无生产调用方的公共 API `FastqBatch::moveRemainderToStart()`（跨批残片由 reader 侧 remainder 处理）。
 - 架构文档对齐 CI 实际触发策略（重任务手动触发、本地优先）与线程口径（CLI `--threads` 默认 1，即默认串行），并在性能特征中补充串行解析/串行压缩的已知限制。

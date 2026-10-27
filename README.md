@@ -142,7 +142,11 @@ clang preset，因此无需安装 libc++：
 ```
 
 首次构建会从源码编译 oneTBB、hwloc、zlib-ng、gtest——ConanCenter 目前不提供
-Linux armv8 预编译包。`--threads` 默认是 1，跑满可用核请显式传参：
+Linux armv8 预编译包。`QualityTrimmer` 的 5'/3' 质量扫描在 ARM64 上使用 NEON
+（aarch64 基线指令集）：首/尾碱基高质量时走单字节快速路径，长低质量尾部才进入
+16 字节向量扫描；典型 read 无额外开销，低质量长尾约快 6–7 倍。
+
+`--threads` 默认是 1，跑满可用核请显式传参：
 
 ```bash
 ./build/clang-release/FastQTools stat -i sample.fastq --threads "$(nproc)"

@@ -26,6 +26,9 @@ private:
     size_t minLength_;
     TrimMode trimMode_;
     int qualityEncoding_;
+    int qualityTarget_ = 0;  ///< 预计算的 int8_t 比较下界
+    bool allLow_ = false;    ///< 所有 int8_t 质量都低于阈值
+    bool allHigh_ = false;   ///< 所有 int8_t 质量都达到阈值
 
     [[nodiscard]] auto trimFivePrime(std::string_view sequence, std::string_view quality) const
         -> size_t;

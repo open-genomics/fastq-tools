@@ -7,6 +7,10 @@
 #include "fqtools/io/fastq_io.h"
 #include "fqtools/processing/mutators.h"
 
+#include <cmath>
+#include <random>
+#include <string>
+
 #include <gtest/gtest.h>
 
 using namespace fq::processing;
@@ -180,6 +184,122 @@ TEST_F(QualityTrimmerTest, Phred64ExtremeThresholdTrimsAll) {
 
     EXPECT_TRUE(read.seq.empty());
     EXPECT_TRUE(read.qual.empty());
+}
+
+// 3' NEON/标量路径同样要处理 target > 127 的全剪情形
+TEST_F(QualityTrimmerTest, Phred64ExtremeThresholdThreePrimeTrimsAll) {
+    QualityTrimmer trimmer(70.0, 1, QualityTrimmer::TrimMode::ThreePrime, 64);
+
+    const std::string seq(40, 'A');
+    const std::string qual(40, '~');
+    FastqRecord read{"read1", {}, seq, qual, "+"};
+    trimmer.process(read);
+
+    EXPECT_TRUE(read.seq.empty());
+    EXPECT_TRUE(read.qual.empty());
+}
+
+// 小数阈值在 3' 长串（覆盖 NEON/AVX2 路径）下同样使用 ceil 语义：
+// 36 个 q21 + 4 个 q20，阈值 20.5 时最后一个高质量碱基在索引 35。
+TEST_F(QualityTrimmerTest, FractionalThresholdThreePrimeOnSimdLengthInput) {
+    QualityTrimmer trimmer(20.5, 1, QualityTrimmer::TrimMode::ThreePrime);
+
+    const std::string high(36, '6');  // q21
+    const std::string low(4, '5');    // q20
+    const std::string seq(40, 'A');
+    const std::string qual = high + low;
+    FastqRecord read{"read1", {}, seq, qual, "+"};
+    trimmer.process(read);
+
+    EXPECT_EQ(read.seq.size(), 36U);
+    EXPECT_EQ(read.qual, high);
+}
+
+// target <= -128 时所有 int8_t 质量都达标；NEON 快速路径与标量必须一致地保留 read
+TEST_F(QualityTrimmerTest, VeryLowThresholdKeepsReadOnSimdLengthInput) {
+    QualityTrimmer trimmer(-200.0, 1, QualityTrimmer::TrimMode::Both);
+
+    const std::string seq(40, 'A');
+    const std::string qual(40, '!');  // q0，远高于 -200
+    FastqRecord read{"read1", {}, seq, qual, "+"};
+    EXPECT_FALSE(trimmer.process(read));
+    EXPECT_EQ(read.seq, seq);
+    EXPECT_EQ(read.qual, qual);
+}
+
+// 巨大阈值不得触发 int 转换 UB；语义应与标量一致（全剪）
+TEST_F(QualityTrimmerTest, HugeThresholdTrimsAllWithoutOverflow) {
+    QualityTrimmer trimmer(1e18, 1, QualityTrimmer::TrimMode::Both);
+
+    const std::string seq(40, 'A');
+    const std::string qual(40, 'I');
+    FastqRecord read{"read1", {}, seq, qual, "+"};
+    trimmer.process(read);
+
+    EXPECT_TRUE(read.seq.empty());
+    EXPECT_TRUE(read.qual.empty());
+}
+
+// NaN 阈值在标量路径下 q >= NaN 恒为 false，SIMD 路径也必须全剪
+TEST_F(QualityTrimmerTest, NaNSimdThresholdTrimsAllLikeScalar) {
+    QualityTrimmer trimmer(std::nan(""), 1, QualityTrimmer::TrimMode::Both);
+
+    const std::string seq(40, 'A');
+    const std::string qual(40, 'I');
+    FastqRecord read{"read1", {}, seq, qual, "+"};
+    trimmer.process(read);
+
+    EXPECT_TRUE(read.seq.empty());
+    EXPECT_TRUE(read.qual.empty());
+}
+
+// 差分测试：用独立参考实现逐条比对随机长度/质量/阈值下的 5'+3' 裁剪结果。
+// 同时覆盖标量尾部、NEON/AVX2 块边界与小数阈值的 ceil 语义。
+TEST_F(QualityTrimmerTest, MatchesScalarReferenceOnRandomQualities) {
+    std::mt19937 rng(20261027);
+    std::uniform_int_distribution<int> lengthDist(0, 300);
+    std::uniform_int_distribution<int> qualityDist(0, 93);
+    std::uniform_int_distribution<int> thresholdDist(0, 100);
+
+    for (int iteration = 0; iteration < 1000; ++iteration) {
+        const auto len = static_cast<std::size_t>(lengthDist(rng));
+        const int thresholdInt = thresholdDist(rng);
+        const double threshold = static_cast<double>(thresholdInt) + 0.5;
+        const int target = thresholdInt + 1 + 33;  // ceil(threshold) + Phred+33
+
+        std::string seq(len, 'A');
+        std::string qual;
+        qual.reserve(len);
+        for (std::size_t i = 0; i < len; ++i) {
+            qual.push_back(static_cast<char>(33 + qualityDist(rng)));
+        }
+
+        // 参考实现：找第一个/最后一个 q >= ceil(threshold) 的碱基
+        std::size_t first = len;
+        std::size_t last = len;
+        for (std::size_t i = 0; i < len; ++i) {
+            // 测试只生成 ASCII 33..126，正数范围内 signed/unsigned char 等价
+            if (static_cast<int>(qual[i]) >= target) {
+                if (first == len) {
+                    first = i;
+                }
+                last = i + 1;
+            }
+        }
+
+        const bool hasHigh = first < last;
+        const std::string expectedSeq = hasHigh ? seq.substr(first, last - first) : std::string{};
+        const std::string expectedQual = hasHigh ? qual.substr(first, last - first) : std::string{};
+
+        QualityTrimmer trimmer(threshold, 1, QualityTrimmer::TrimMode::Both);
+        FastqRecord read{"read1", {}, seq, qual, "+"};
+        trimmer.process(read);
+
+        EXPECT_EQ(read.seq, expectedSeq)
+            << "iteration=" << iteration << " len=" << len << " threshold=" << threshold;
+        EXPECT_EQ(read.qual, expectedQual)
+            << "iteration=" << iteration << " len=" << len << " threshold=" << threshold;
+    }
 }
 
 // ============================================================================

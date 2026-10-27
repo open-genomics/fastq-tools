@@ -91,14 +91,14 @@ shared，直接复制构建目录里的二进制会把构建机的 Conan 缓存�
 - **在 ARM 上继续使用 `clang-release` preset 并安装 libc++-21-dev** — 能保持与 x86 完全相同的 preset；但需要让 Conan 依赖也按 libc++ 重建，且产物引入 libc++ 运行期依赖。ARM 服务器上系统 libstdc++ 更普遍，收益不抵复杂度。
 - **交叉编译（x86 主机产出 aarch64 二进制）** — 适合发布流水线；但用户的核心诉求是在鲲鹏服务器上原生开发与运行，交叉编译无法验证目标机上的测试与性能，且需要额外 sysroot/模拟器。选择原生构建。
 - **下调 `CMakeLists.txt` 的 GCC 13/Clang 17 门禁到 C++20/GCC 11** — 源码实际最高只用到 C++20 的 `std::string::starts_with`，本机 GCC 11.4 能编译代表性 TU；但依赖库、sanitizer 与 CI 的验证成本高，且会削弱"现代 C++23 工程"的项目定位。保留门禁，改为在 ARM 上安装 Clang 21。
-- **现在为 QualityTrimmer 补 NEON 实现** — ARM 上标量回退已验证与 AVX2 语义逐字节等价，功能正确；NEON 属于性能优化，需要独立的基准与跨架构回归，和本次"可构建、可测试、可发布"的目标分开。
+- **当时暂缓、后续已实现：QualityTrimmer NEON** — ARM 上标量回退已验证与 AVX2 语义逐字节等价，功能正确；NEON 属于性能优化，需要独立的基准与跨架构回归，和本次"可构建、可测试、可发布"的目标分开。后续已在 [QualityTrimmer ARM64 NEON 质量扫描](../feature/2026-10-27-neon-quality-trimmer.md) 中补齐。
 - **使用自建 ARM runner** — 可以覆盖私有环境与性能测试；但需要长期运维，公共仓库已有免费的 `ubuntu-24.04-arm` 托管 runner，先用托管方案。
 
 ## Consequences
 
 - **收益**：ARM64 服务器可直接用 `./scripts/core/install-deps && ./scripts/core/build` 构建；CI 在原生 ARM runner 上跑单测与 e2e；发布同时提供 x86_64 与 aarch64 二进制；benchmark 元数据能反映 cgroup 实际配额。
-- **代价与已知上限**：ARM 首次构建需源码编译四个依赖，耗时和磁盘占用高于 x86；ConanCenter 后续若仍无 armv8 二进制，这一成本会持续。ARM 上不提供 libc++ 构建，显式 `--preset clang-release` 仍会失败（需改用默认路径或自备 libc++）。TSan 在受限 seccomp 容器中不可用，属环境限制。NEON 优化尚未实现，QualityTrimmer 在 ARM 上走标量路径。`zlib-ng` 因 `find_package(ZLIB)` 走模块模式仍未被实际链接（既有问题），ARM 首次构建会编译它但不使用，运行时链接系统 zlib；`install-deps` 已安装 `zlib1g-dev`。
-- **重访信号**：ConanCenter 开始发布 Linux armv8 二进制、ARM runner 标签或免费策略变化、或需要 ARM 专用 SIMD 性能目标时，重新评估本决定。
+- **代价与已知上限**：ARM 首次构建需源码编译四个依赖，耗时和磁盘占用高于 x86；ConanCenter 后续若仍无 armv8 二进制，这一成本会持续。ARM 上不提供 libc++ 构建，显式 `--preset clang-release` 仍会失败（需改用默认路径或自备 libc++）。TSan 在受限 seccomp 容器中不可用，属环境限制。NEON 优化已在后续 [QualityTrimmer ARM64 NEON 质量扫描](../feature/2026-10-27-neon-quality-trimmer.md) 中实现；x86 AVX2 路径不变。`zlib-ng` 因 `find_package(ZLIB)` 走模块模式仍未被实际链接（既有问题），ARM 首次构建会编译它但不使用，运行时链接系统 zlib；`install-deps` 已安装 `zlib1g-dev`。
+- **重访信号**：ConanCenter 开始发布 Linux armv8 二进制、ARM runner 标签或免费策略变化、或需要 SVE/更激进的 SIMD 优化时，重新评估本决定。
 
 ## Verification
 

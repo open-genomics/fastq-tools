@@ -9,6 +9,8 @@
 
 #ifdef __AVX2__
 #include <immintrin.h>
+#elif defined(__ARM_NEON)
+#include <arm_neon.h>
 #endif
 
 namespace fq::processing {
@@ -22,7 +24,20 @@ QualityTrimmer::QualityTrimmer(double qualityThreshold,
     : qualityThreshold_(qualityThreshold),
       minLength_(minLength),
       trimMode_(mode),
-      qualityEncoding_(qualityEncoding) {}
+      qualityEncoding_(qualityEncoding) {
+    // 预计算整数目标：q >= threshold（q 为整数）等价于
+    // (int8_t)char >= ceil(threshold) + encoding。NaN/无穷/溢出在构造时
+    // 归类为全低/全高，避免热路径中的未定义 int 转换；标量
+    // isHighQuality() 与 AVX2/NEON 共用同一套判断。
+    const double ceilThreshold = std::ceil(qualityThreshold_);
+    if (std::isnan(ceilThreshold) || ceilThreshold > 127.0 - qualityEncoding_) {
+        allLow_ = true;
+    } else if (ceilThreshold <= -128.0 - qualityEncoding_) {
+        allHigh_ = true;
+    } else {
+        qualityTarget_ = static_cast<int>(ceilThreshold) + qualityEncoding_;
+    }
+}
 
 auto QualityTrimmer::process(fq::io::FastqRecord& read) -> bool {
     if (read.empty()) {
@@ -76,19 +91,19 @@ auto QualityTrimmer::trimFivePrime(std::string_view sequence, std::string_view q
 
 #ifdef __AVX2__
     // 必须与标量路径 isHighQuality() 语义一致：q >= threshold（q 为整数），
-    // 等价于 char >= ceil(threshold) + encoding。历史实现用 static_cast<int>
-    // 截断阈值（floor），使小数阈值在 AVX2 构建与标量构建下剪出不同结果。
-    const int target = static_cast<int>(std::ceil(qualityThreshold_)) + qualityEncoding_;
-    if (target > 127) {
-        // 任何 char 都无法达到门限：q = char - encoding <= 127 - encoding < threshold，
-        // 全剪（同时规避 set1_epi8 的符号回绕）
-        return len;
+    // 等价于 char >= ceil(threshold) + encoding。构造函数已预计算
+    // qualityTarget_/allLow_/allHigh_，并处理 NaN/无穷/溢出边界。
+    if (allLow_) {
+        return len;  // 任何 char 都无法达到门限：全剪
     }
-    if (target - 1 >= -128) {
+    if (allHigh_) {
+        return 0;  // 所有 int8_t 取值都达到门限：5' 无需裁剪
+    }
+    {
         // 找第一个高质量碱基：char >= target ⟺ char > target - 1。
         // _mm256_cmpgt_epi8 是有符号比较；target-1 落在 [-128, 126] 时，
         // 对全部字节取值都与标量整数比较一致。
-        const __m256i vTarget = _mm256_set1_epi8(static_cast<char>(target - 1));
+        const __m256i vTarget = _mm256_set1_epi8(static_cast<char>(qualityTarget_ - 1));
         for (; i + 32 <= len; i += 32) {
             __m256i chunk =
                 _mm256_loadu_si256(reinterpret_cast<const __m256i*>(quality.data() + i));
@@ -99,8 +114,41 @@ auto QualityTrimmer::trimFivePrime(std::string_view sequence, std::string_view q
             }
         }
     }
-    // target - 1 < -128 仅在阈值极低时出现（CLI 拒绝负值）；
-    // 跳过 SIMD，由下方标量循环保证语义一致
+#elif defined(__ARM_NEON)
+    // 典型高质量 read 的第一个碱基就达标；先标量检查单字节，命中即返回，
+    // 连 target 计算和 SIMD 固定开销都省掉。低质量开头才进入向量扫描。
+    if (len > 0 && isHighQuality(quality[0])) {
+        return 0;
+    }
+
+    // aarch64 上 NEON 是基线指令集。语义与 AVX2/标量完全一致：
+    // 找第一个 (int8_t)quality[i] >= ceil(threshold) + encoding 的位置。
+    if (allLow_) {
+        return len;  // 任何 char 都无法达到门限：全剪
+    }
+    if (allHigh_) {
+        return 0;  // 所有 int8_t 取值都达到门限：5' 无需裁剪
+    }
+    {
+        const int8x16_t vTarget = vdupq_n_s8(static_cast<std::int8_t>(qualityTarget_ - 1));
+        for (; i + 16 <= len; i += 16) {
+            const int8x16_t chunk =
+                vld1q_s8(reinterpret_cast<const std::int8_t*>(quality.data() + i));
+            const uint8x16_t gt = vcgtq_s8(chunk, vTarget);
+            // 先判断本块是否有命中，避免对全低质量块做 16 次逐字节扫描
+            const uint64x2_t bits = vreinterpretq_u64_u8(gt);
+            if ((vgetq_lane_u64(bits, 0) | vgetq_lane_u64(bits, 1)) == 0) {
+                continue;
+            }
+            std::uint8_t mask[16];
+            vst1q_u8(mask, gt);  // 按内存顺序存放，与主机大小端无关
+            for (std::size_t j = 0; j < 16; ++j) {
+                if (mask[j] != 0) {
+                    return i + j;
+                }
+            }
+        }
+    }
 #endif
 
     for (; i < len; ++i) {
@@ -116,6 +164,41 @@ auto QualityTrimmer::trimThreePrime(std::string_view sequence, std::string_view 
     size_t len = std::min(sequence.size(), quality.size());
     // Scan from end
     size_t i = len;
+#if defined(__ARM_NEON)
+    // 与 5' 对称：先标量检查尾部单字节，高质量 read 直接返回。
+    if (len > 0 && isHighQuality(quality[len - 1])) {
+        return len;
+    }
+
+    // 从尾部按 16 字节块扫描，找最后一个高质量碱基；阈值语义同 trimFivePrime。
+    if (allLow_) {
+        return 0;  // 任何 char 都无法达到门限：全剪
+    }
+    if (allHigh_) {
+        return len;  // 所有 int8_t 取值都达到门限：3' 无需裁剪
+    }
+    {
+        const int8x16_t vTarget = vdupq_n_s8(static_cast<std::int8_t>(qualityTarget_ - 1));
+        while (i >= 16) {
+            const int8x16_t chunk =
+                vld1q_s8(reinterpret_cast<const std::int8_t*>(quality.data() + i - 16));
+            const uint8x16_t gt = vcgtq_s8(chunk, vTarget);
+            const uint64x2_t bits = vreinterpretq_u64_u8(gt);
+            if ((vgetq_lane_u64(bits, 0) | vgetq_lane_u64(bits, 1)) == 0) {
+                i -= 16;
+                continue;
+            }
+            std::uint8_t mask[16];
+            vst1q_u8(mask, gt);
+            for (std::size_t j = 16; j-- > 0;) {
+                if (mask[j] != 0) {
+                    return i - 16 + j + 1;
+                }
+            }
+            i -= 16;
+        }
+    }
+#endif
     while (i > 0) {
         if (isHighQuality(quality[i - 1])) {
             return i;
@@ -126,9 +209,14 @@ auto QualityTrimmer::trimThreePrime(std::string_view sequence, std::string_view 
 }
 
 auto QualityTrimmer::isHighQuality(char qualityChar) const -> bool {
+    if (allLow_) {
+        return false;
+    }
+    if (allHigh_) {
+        return true;
+    }
     // 显式按 int8_t 解释：非法字节（>=128）在 x86/ARM 上一致视为负质量
-    int q = static_cast<int>(static_cast<std::int8_t>(qualityChar)) - qualityEncoding_;
-    return q >= qualityThreshold_;
+    return static_cast<int>(static_cast<std::int8_t>(qualityChar)) >= qualityTarget_;
 }
 
 auto QualityTrimmer::getName() const -> std::string {
